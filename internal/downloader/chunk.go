@@ -115,6 +115,13 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 	if st.Resumable && resp.StatusCode == http.StatusOK && start != 0 {
 		return &permanentError{fmt.Errorf("server ignored range request (got 200 for bytes=%d-)", start)}
 	}
+	// A 206 is written at the requested offset, so it must say it carries
+	// exactly that range of exactly this file.
+	if resp.StatusCode == http.StatusPartialContent {
+		if err := checkContentRange(resp.Header.Get("Content-Range"), start, st.Size); err != nil {
+			return &permanentError{err}
+		}
+	}
 
 	var body io.Reader = resp.Body
 	var want int64 = -1 // bytes this request must deliver, -1 = unknown
@@ -182,6 +189,22 @@ func backoffDelay(base time.Duration, attempt int) time.Duration {
 	}
 	jitter := 0.85 + rand.Float64()*0.3 //nolint:gosec // G404: retry-delay jitter, not a security context
 	return time.Duration(d * jitter)
+}
+
+// checkContentRange verifies a 206's Content-Range against the request:
+// it must start at start and, when both are known, report size as the
+// file's total length. An unknown total ("*") is accepted.
+func checkContentRange(headerVal string, start, size int64) error {
+	first, last, total, ok := parseContentRange(headerVal)
+	switch {
+	case !ok:
+		return fmt.Errorf("206 response without a valid Content-Range (%q)", headerVal)
+	case first != start:
+		return fmt.Errorf("server sent bytes %d-%d for a request starting at %d", first, last, start)
+	case total >= 0 && size > 0 && total != size:
+		return fmt.Errorf("server reports a total size of %d bytes, expected %d (remote file changed?)", total, size)
+	}
+	return nil
 }
 
 // permanentError marks a chunk failure that retrying the identical

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 // probe determines the remote file's size and whether it supports byte
@@ -71,12 +73,44 @@ func probeRangedGet(ctx context.Context, client *http.Client, url string) (int64
 // parseContentRangeSize extracts the total size from a header of the form
 // "bytes 0-0/12345". Returns 0 if the total is unknown ("*") or malformed.
 func parseContentRangeSize(headerVal string) int64 {
-	var start, end, total int64
-	n, err := fmt.Sscanf(headerVal, "bytes %d-%d/%d", &start, &end, &total)
-	if err != nil || n != 3 {
+	_, _, total, ok := parseContentRange(headerVal)
+	if !ok || total < 0 {
 		return 0
 	}
 	return total
+}
+
+// parseContentRange parses a single-range Content-Range header,
+// "bytes first-last/total" (RFC 9110 §14.4). total is -1 when the
+// server sends "*" (length unknown). ok is false for anything else,
+// including unsatisfied-range forms ("bytes */total") and last < first.
+func parseContentRange(headerVal string) (first, last, total int64, ok bool) {
+	spec, found := strings.CutPrefix(strings.TrimSpace(headerVal), "bytes ")
+	if !found {
+		return 0, 0, 0, false
+	}
+	rng, totalStr, found := strings.Cut(spec, "/")
+	if !found {
+		return 0, 0, 0, false
+	}
+	firstStr, lastStr, found := strings.Cut(rng, "-")
+	if !found {
+		return 0, 0, 0, false
+	}
+	first, err1 := strconv.ParseInt(firstStr, 10, 64)
+	last, err2 := strconv.ParseInt(lastStr, 10, 64)
+	if err1 != nil || err2 != nil || first < 0 || last < first {
+		return 0, 0, 0, false
+	}
+	total = -1
+	if totalStr != "*" {
+		t, err := strconv.ParseInt(totalStr, 10, 64)
+		if err != nil || t <= last {
+			return 0, 0, 0, false
+		}
+		total = t
+	}
+	return first, last, total, true
 }
 
 func errStatus(code int) error {
