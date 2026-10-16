@@ -38,6 +38,8 @@ type origin struct {
 
 	ranges bool
 	delay  time.Duration
+	// unknownTotal sends Content-Range totals as "*" (RFC 9110: length unknown).
+	unknownTotal bool
 
 	bytesOut  atomic.Int64 // body bytes sent by GETs
 	gets      atomic.Int32
@@ -57,9 +59,12 @@ func (o *origin) rangeStarts() []int {
 	return append([]int(nil), o.starts...)
 }
 
-func newOrigin(t *testing.T, payload []byte, ranges bool, delay time.Duration) *origin {
+func newOrigin(t *testing.T, payload []byte, ranges bool, delay time.Duration, opts ...func(*origin)) *origin {
 	t.Helper()
 	o := &origin{payload: payload, ranges: ranges, delay: delay}
+	for _, opt := range opts {
+		opt(o) // before the server starts, so handlers see it without a lock
+	}
 	o.srv = httptest.NewServer(o)
 	t.Cleanup(o.srv.Close)
 	return o
@@ -113,7 +118,11 @@ func (o *origin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if end >= len(payload) {
 			end = len(payload) - 1
 		}
-		h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(payload)))
+		total := fmt.Sprint(len(payload))
+		if o.unknownTotal {
+			total = "*"
+		}
+		h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%s", start, end, total))
 	}
 	body := payload[start : end+1]
 	h.Set("Content-Length", fmt.Sprintf("%d", len(body)))
@@ -453,4 +462,74 @@ func TestDownload_ValidStateResumesOnlyMissingBytes(t *testing.T) {
 		t.Errorf("resume transferred %d bytes, want exactly the missing %d", sent, want)
 	}
 	assertFileEquals(t, dest, payload)
+}
+
+// --- M15: a 206 must carry exactly the requested range ---
+
+func TestDownload_206WithWrongContentRangeIsRejected_M15(t *testing.T) {
+	payload := randomPayload(16<<20, 10)
+	cases := map[string]func(start, end, size int) string{
+		// Always the file's first bytes, whatever was asked for.
+		"wrong start": func(start, end, size int) string { return fmt.Sprintf("bytes 0-%d/%d", end-start, size) },
+		"wrong total": func(start, end, size int) string { return fmt.Sprintf("bytes %d-%d/%d", start, end, size+1) },
+		"missing":     func(int, int, int) string { return "" },
+		"garbage":     func(int, int, int) string { return "bytes x-y/z" },
+	}
+	for name, contentRange := range cases {
+		t.Run(name, func(t *testing.T) {
+			var gets atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Accept-Ranges", "bytes")
+				rh := r.Header.Get("Range")
+				if r.Method == http.MethodHead || rh == "" {
+					w.Header().Set("Content-Length", fmt.Sprint(len(payload)))
+					if r.Method != http.MethodHead {
+						_, _ = w.Write(payload)
+					}
+					return
+				}
+				gets.Add(1)
+				var s, e int
+				_, _ = fmt.Sscanf(rh, "bytes=%d-%d", &s, &e)
+				body := payload[s : e+1]
+				if name == "wrong start" {
+					body = payload[:e-s+1]
+				}
+				if cr := contentRange(s, e, len(payload)); cr != "" {
+					w.Header().Set("Content-Range", cr)
+				}
+				w.WriteHeader(http.StatusPartialContent)
+				_, _ = w.Write(body)
+			}))
+			t.Cleanup(srv.Close)
+			base := t.TempDir()
+
+			e := New(Config{BaseDir: base, RetryMax: 3, RetryBackoffBase: 20 * time.Millisecond})
+			_, err := e.Download(context.Background(), Request{URL: srv.URL, RelPath: "f.bin", ParallelChunks: 4})
+			if err == nil {
+				t.Fatal("Download succeeded, want an error for the bad Content-Range")
+			}
+			if _, statErr := os.Stat(filepath.Join(base, "f.bin")); statErr == nil {
+				t.Fatal("a file was finalized from a mismatched range")
+			}
+			if n := gets.Load(); n > 4 {
+				t.Errorf("ranged GETs = %d, the permanent mismatch was retried", n)
+			}
+		})
+	}
+}
+
+// Normal case: "bytes a-b/*" (total length unknown, allowed by RFC 9110)
+// is accepted, through a pause and resume, with a bit-exact result.
+func TestDownload_PauseResume_ContentRangeUnknownTotal_BitExact(t *testing.T) {
+	payload := randomPayload(512<<10, 11)
+	o := newOrigin(t, payload, true, 4*time.Millisecond, func(o *origin) { o.unknownTotal = true })
+	base := t.TempDir()
+
+	pauseDownload(t, base, o.srv.URL, 4, 80*time.Millisecond)
+	res := resumeDownload(t, base, o.srv.URL, 4)
+	if !res.Resumed {
+		t.Error("Resumed = false, want the paused transfer to continue")
+	}
+	assertFileEquals(t, res.Path, payload)
 }
