@@ -75,11 +75,19 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
+	ifRange := false
 	if st.Resumable {
 		if chunk.End >= chunk.Start {
 			httpReq.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, chunk.End))
 		} else {
 			httpReq.Header.Set("Range", fmt.Sprintf("bytes=%d-", start))
+		}
+		// Only the version the bytes on disk belong to may be resumed: if
+		// the file changed, the server answers 200 with the whole new file
+		// instead of the range.
+		if st.Validator != "" {
+			httpReq.Header.Set("If-Range", st.Validator)
+			ifRange = true
 		}
 	}
 
@@ -97,6 +105,12 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	// 200 to an If-Range request from a server reporting another version:
+	// the remote file was replaced and nothing on disk belongs to it. With
+	// the same validator the server merely ignores Range, handled below.
+	if ifRange && resp.StatusCode == http.StatusOK && validatorOf(resp.Header) != st.Validator {
+		return &permanentError{fmt.Errorf("%w (expected version %s)", errRemoteChanged, st.Validator)}
 	}
 
 	// An expired/invalid download link very often still answers 200 —
@@ -229,3 +243,7 @@ func looksLikeHTMLFile(relPath string) bool {
 // errStalled marks a transfer aborted by the stall watchdog — retryable,
 // unlike a cancellation of the caller's own context.
 var errStalled = errors.New("transfer stalled")
+
+// errRemoteChanged marks a transfer whose remote file was replaced by
+// another version mid-download (If-Range mismatch); Download starts over.
+var errRemoteChanged = errors.New("remote file changed during download")

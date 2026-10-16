@@ -8,66 +8,92 @@ import (
 	"strings"
 )
 
-// probe determines the remote file's size and whether it supports byte
-// range requests, without downloading the body. It tries HEAD first (cheap,
-// widely supported) and falls back to a 1-byte ranged GET for servers that
-// reject HEAD.
-func probe(ctx context.Context, client *http.Client, url string) (size int64, supportsRange bool, err error) {
-	size, supportsRange, err = probeHead(ctx, client, url)
-	if err == nil && size > 0 && supportsRange {
-		return size, true, nil
+// remoteFile is what probe learned about the file behind a URL.
+type remoteFile struct {
+	size   int64 // <= 0 if unknown
+	ranges bool
+	// validator identifies this version of the file, for If-Range and for
+	// recognizing it again on resume: a strong ETag if the server sent
+	// one, else Last-Modified, else "". A weak ETag can't be used — a
+	// server must never honor it in If-Range (RFC 9110 §13.1.5).
+	validator string
+}
+
+func validatorOf(h http.Header) string {
+	if etag := h.Get("ETag"); etag != "" && !strings.HasPrefix(etag, "W/") {
+		return etag
+	}
+	return h.Get("Last-Modified")
+}
+
+// probe determines the remote file's size, version validator and whether
+// it supports byte range requests, without downloading the body. It tries
+// HEAD first (cheap, widely supported) and falls back to a 1-byte ranged
+// GET for servers that reject HEAD.
+func probe(ctx context.Context, client *http.Client, url string) (remoteFile, error) {
+	head, err := probeHead(ctx, client, url)
+	if err == nil && head.size > 0 && head.ranges {
+		return head, nil
 	}
 	// Many hoster CDNs answer HEAD without an Accept-Ranges header but
 	// still honor Range on GET. Without this second look such downloads
 	// ran as a single, non-resumable stream: no parallel chunks, and a
 	// dropped connection restarted the whole file from byte 0.
-	rSize, rRange, rErr := probeRangedGet(ctx, client, url)
-	if rErr == nil && (rRange || size <= 0) {
-		return rSize, rRange, nil
+	ranged, rErr := probeRangedGet(ctx, client, url)
+	if rErr == nil && (ranged.ranges || head.size <= 0) {
+		return ranged, nil
 	}
-	if err == nil && size > 0 {
-		return size, false, nil
+	if err == nil && head.size > 0 {
+		head.ranges = false
+		return head, nil
 	}
-	return rSize, rRange, rErr
+	return ranged, rErr
 }
 
-func probeHead(ctx context.Context, client *http.Client, url string) (int64, bool, error) {
+func probeHead(ctx context.Context, client *http.Client, url string) (remoteFile, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
-		return 0, false, err
+		return remoteFile{}, err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, false, err
+		return remoteFile{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return 0, false, errStatus(resp.StatusCode)
+		return remoteFile{}, errStatus(resp.StatusCode)
 	}
-	return resp.ContentLength, resp.Header.Get("Accept-Ranges") == "bytes", nil
+	return remoteFile{
+		size:      resp.ContentLength,
+		ranges:    resp.Header.Get("Accept-Ranges") == "bytes",
+		validator: validatorOf(resp.Header),
+	}, nil
 }
 
-func probeRangedGet(ctx context.Context, client *http.Client, url string) (int64, bool, error) {
+func probeRangedGet(ctx context.Context, client *http.Client, url string) (remoteFile, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return 0, false, err
+		return remoteFile{}, err
 	}
 	req.Header.Set("Range", "bytes=0-0")
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, false, err
+		return remoteFile{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusPartialContent {
-		size := parseContentRangeSize(resp.Header.Get("Content-Range"))
-		return size, true, nil
+		return remoteFile{
+			size:      parseContentRangeSize(resp.Header.Get("Content-Range")),
+			ranges:    true,
+			validator: validatorOf(resp.Header),
+		}, nil
 	}
 	if resp.StatusCode >= 400 {
-		return 0, false, errStatus(resp.StatusCode)
+		return remoteFile{}, errStatus(resp.StatusCode)
 	}
 	// Server ignored the Range request and returned the full body (200).
-	return resp.ContentLength, false, nil
+	return remoteFile{size: resp.ContentLength, validator: validatorOf(resp.Header)}, nil
 }
 
 // parseContentRangeSize extracts the total size from a header of the form
