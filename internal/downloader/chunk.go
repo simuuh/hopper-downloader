@@ -26,9 +26,11 @@ func (e *Engine) downloadChunk(ctx context.Context, f *os.File, req Request, st 
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-			if !st.Resumable {
-				st.resetChunk(idx)
-			}
+		}
+		// Without Range support every attempt receives the file from byte
+		// 0, so its progress must start there too.
+		if !st.Resumable {
+			st.resetChunk(idx)
 		}
 
 		err := e.fetchChunkOnce(ctx, f, req, st, idx)

@@ -143,18 +143,23 @@ func buildChunks(size int64, n int) []chunkState {
 	return chunks
 }
 
-// loadOrCreateState loads a persisted resume record matching url/size/dest
-// if one exists and is compatible, or creates a fresh one otherwise. A
-// mismatched URL or size invalidates the old state (the remote file
-// changed) and starts over. A missing or corrupt state file is treated
-// the same as "no prior state" rather than an error: the caller can
-// always fall back to a fresh download.
+// loadOrCreateState loads a persisted resume record for dest if the
+// current transfer can resume it, or creates a fresh one otherwise. Only
+// a resumable transfer resumes, and only from a state that was itself
+// resumable, has the same URL and size, and whose chunks describe the
+// file exactly (see validChunks): a server without Range support sends
+// the file from byte 0 again, so its saved progress is worthless. A
+// missing, corrupt or unusable state file means a fresh start, not an
+// error.
 func loadOrCreateState(dest, url string, size int64, resumable bool, numChunks int) (st *state, resumedFromDisk bool) {
 	sp := statePath(dest)
+	if !resumable {
+		return newState(url, size, resumable, numChunks, sp), false
+	}
 	if data, readErr := os.ReadFile(sp); readErr == nil {
 		var loaded state
 		if jsonErr := json.Unmarshal(data, &loaded); jsonErr == nil {
-			if loaded.URL == url && loaded.Size == size && loaded.Resumable == resumable && len(loaded.Chunks) > 0 {
+			if loaded.Resumable && loaded.URL == url && loaded.Size == size && validChunks(loaded.Chunks, size) {
 				loaded.path = sp
 				return &loaded, true
 			}
@@ -162,6 +167,22 @@ func loadOrCreateState(dest, url string, size int64, resumable bool, numChunks i
 	}
 
 	return newState(url, size, resumable, numChunks, sp), false
+}
+
+// validChunks reports whether chunks are contiguous inclusive ranges
+// covering exactly [0, size), each with progress within its own length.
+func validChunks(chunks []chunkState, size int64) bool {
+	if len(chunks) == 0 || size <= 0 {
+		return false
+	}
+	next := int64(0)
+	for _, c := range chunks {
+		if c.Start != next || c.End < c.Start || c.Downloaded < 0 || c.Downloaded > c.End-c.Start+1 {
+			return false
+		}
+		next = c.End + 1
+	}
+	return next == size
 }
 
 // newState builds a fresh resume record with no progress.
