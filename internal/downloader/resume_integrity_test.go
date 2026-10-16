@@ -339,3 +339,118 @@ func TestDownload_ResumeSkipsCompletedChunk_BitExact(t *testing.T) {
 	}
 	assertFileEquals(t, dest, payload)
 }
+
+// --- H4: resume only what can really be resumed ---
+
+// A state saved by an interrupted non-resumable transfer (no Range
+// support) must not be resumed: the server sends the file from byte 0
+// again, which used to be written at the saved offset.
+func TestDownload_NonResumableStateIsNotResumed_H4(t *testing.T) {
+	payload := randomPayload(8<<20, 6)
+	srv := rangeServer(t, payload, false)
+	base := t.TempDir()
+	dest := filepath.Join(base, "f.bin")
+
+	st := newState(srv.URL, int64(len(payload)), false, 1, statePath(dest))
+	st.Chunks[0].Downloaded = 1 << 20
+	if err := st.save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tempPath(dest), payload[:1<<20], 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := New(Config{BaseDir: base}).Download(context.Background(), Request{URL: srv.URL, RelPath: "f.bin"})
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if res.Resumed {
+		t.Error("Resumed = true for a server without Range support")
+	}
+	assertFileEquals(t, dest, payload)
+}
+
+// The same through a real pause: the restart must yield the exact file.
+func TestDownload_PauseResume_NoRangeSupport_RestartsBitExact_H4(t *testing.T) {
+	payload := randomPayload(512<<10, 7)
+	o := newOrigin(t, payload, false, 4*time.Millisecond)
+	base := t.TempDir()
+
+	pauseDownload(t, base, o.srv.URL, 1, 80*time.Millisecond)
+	res := resumeDownload(t, base, o.srv.URL, 1)
+	if res.Resumed {
+		t.Error("Resumed = true for a server without Range support")
+	}
+	assertFileEquals(t, res.Path, payload)
+}
+
+// A resumable state whose chunk layout doesn't describe the file
+// (corrupt or hand-edited .part.json) is discarded instead of trusted.
+func TestDownload_InvalidChunkLayoutStartsFresh_H4(t *testing.T) {
+	const size = 1 << 20
+	const half = size / 2
+	payload := randomPayload(size, 8)
+	cases := map[string]string{
+		"progress beyond chunk": fmt.Sprintf(`[{"start":0,"end":%d,"downloaded":%d},{"start":%d,"end":%d,"downloaded":0}]`, half-1, half+100, half, size-1),
+		"gap between chunks":    fmt.Sprintf(`[{"start":0,"end":%d,"downloaded":0},{"start":%d,"end":%d,"downloaded":0}]`, half-1, half+10, size-1),
+		"overlapping chunks":    fmt.Sprintf(`[{"start":0,"end":%d,"downloaded":0},{"start":%d,"end":%d,"downloaded":0}]`, half+10, half, size-1),
+		"short of the end":      fmt.Sprintf(`[{"start":0,"end":%d,"downloaded":0}]`, size-100),
+	}
+	for name, chunks := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := rangeServer(t, payload, true)
+			base := t.TempDir()
+			dest := filepath.Join(base, "f.bin")
+			state := fmt.Sprintf(`{"url":%q,"size":%d,"resumable":true,"num_chunks":2,"chunks":%s}`, srv.URL, size, chunks)
+			if err := os.WriteFile(statePath(dest), []byte(state), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(tempPath(dest), make([]byte, size), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			res, err := New(Config{BaseDir: base}).Download(context.Background(), Request{URL: srv.URL, RelPath: "f.bin", ParallelChunks: 2})
+			if err != nil {
+				t.Fatalf("Download: %v", err)
+			}
+			if res.Resumed {
+				t.Error("Resumed = true with an invalid chunk layout")
+			}
+			assertFileEquals(t, dest, payload)
+		})
+	}
+}
+
+// Normal case: a valid saved state is used and only the missing bytes
+// are fetched.
+func TestDownload_ValidStateResumesOnlyMissingBytes(t *testing.T) {
+	payload := randomPayload(1<<20, 9)
+	o := newOrigin(t, payload, true, 0)
+	base := t.TempDir()
+	dest := filepath.Join(base, "f.bin")
+
+	st := newState(o.srv.URL, int64(len(payload)), true, 4, statePath(dest))
+	part := make([]byte, len(payload))
+	var have int64
+	for i := range st.Chunks {
+		c := &st.Chunks[i]
+		c.Downloaded = (c.End - c.Start + 1) / 3
+		copy(part[c.Start:c.Start+c.Downloaded], payload[c.Start:c.Start+c.Downloaded])
+		have += c.Downloaded
+	}
+	if err := os.WriteFile(tempPath(dest), part, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	res := resumeDownload(t, base, o.srv.URL, 4)
+	if !res.Resumed {
+		t.Error("Resumed = false for a valid saved state")
+	}
+	if sent, want := o.bytesOut.Load(), int64(len(payload))-have; sent != want {
+		t.Errorf("resume transferred %d bytes, want exactly the missing %d", sent, want)
+	}
+	assertFileEquals(t, dest, payload)
+}
