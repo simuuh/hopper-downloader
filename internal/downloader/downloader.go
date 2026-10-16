@@ -340,6 +340,13 @@ func (e *Engine) Download(ctx context.Context, req Request) (*Result, error) {
 		return nil, waitErr
 	}
 
+	// Last line of defense against finalizing a file with a hole: every
+	// chunk reporting success must add up to the full remote size.
+	if got := st.totalDownloaded(); st.Size > 0 && got != st.Size {
+		_ = st.save()
+		return nil, fmt.Errorf("downloader: incomplete: received %d of %d bytes", got, st.Size)
+	}
+
 	// The finished file is exactly as long as the remote file (or, with an
 	// unknown size, as what was received) — never longer, whatever the
 	// .part held before.

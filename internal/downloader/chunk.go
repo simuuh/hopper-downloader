@@ -87,8 +87,11 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 	}
 	defer resp.Body.Close()
 
+	// A chunk that is already complete returns before any request is made,
+	// so a 416 always means bytes are missing — the file behind the URL
+	// shrank or is no longer served. Retrying the same range won't help.
 	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
-		return nil // already fully downloaded
+		return &permanentError{fmt.Errorf("server cannot serve bytes %d- (remote file changed?)", start)}
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)
