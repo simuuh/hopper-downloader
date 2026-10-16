@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,6 +37,8 @@ type origin struct {
 	payload []byte
 	etag    string
 	lastMod string
+
+	staleHeadETag string // see staleHeadOnce
 
 	ranges bool
 	delay  time.Duration
@@ -70,6 +74,20 @@ func newOrigin(t *testing.T, payload []byte, ranges bool, delay time.Duration, o
 	return o
 }
 
+func (o *origin) set(payload []byte, etag, lastMod string) {
+	o.mu.Lock()
+	o.payload, o.etag, o.lastMod = payload, etag, lastMod
+	o.mu.Unlock()
+}
+
+// staleHeadOnce makes the next HEAD report etag instead of the current
+// one, like a CDN edge that still has the old metadata cached.
+func (o *origin) staleHeadOnce(etag string) {
+	o.mu.Lock()
+	o.staleHeadETag = etag
+	o.mu.Unlock()
+}
+
 func (o *origin) resetCounters() {
 	o.bytesOut.Store(0)
 	o.gets.Store(0)
@@ -81,11 +99,15 @@ func (o *origin) resetCounters() {
 func (o *origin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	o.mu.Lock()
 	payload, etag, lastMod := o.payload, o.etag, o.lastMod
+	headETag := etag
+	if r.Method == http.MethodHead && o.staleHeadETag != "" {
+		headETag, o.staleHeadETag = o.staleHeadETag, ""
+	}
 	o.mu.Unlock()
 
 	h := w.Header()
-	if etag != "" {
-		h.Set("ETag", etag)
+	if headETag != "" {
+		h.Set("ETag", headETag)
 	}
 	if lastMod != "" {
 		h.Set("Last-Modified", lastMod)
@@ -105,7 +127,8 @@ func (o *origin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet {
 				o.ifRanges.Add(1)
 			}
-			if ir != etag && ir != lastMod {
+			// RFC 9110 §13.1.5: a weak entity tag never matches If-Range.
+			if strings.HasPrefix(ir, "W/") || (ir != etag && ir != lastMod) {
 				ranged, start, end = false, 0, len(payload)-1 // changed: whole new file
 			}
 		}
@@ -160,12 +183,16 @@ func (o *origin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// pauseAfter is how long pauseDownload lets a transfer run: with a
+// 4 ms delay per 4 KiB the 512 KiB test files are far from done by then.
+const pauseAfter = 80 * time.Millisecond
+
 // pauseDownload starts a download of url into base/f.bin and cancels it
-// after d, like a user pausing it. It fails the test if the transfer
+// after pauseAfter, like a user pausing it. It fails the test if the transfer
 // finished before the pause or left no resume data behind.
-func pauseDownload(t *testing.T, base, url string, chunks int, d time.Duration) {
+func pauseDownload(t *testing.T, base, url string, chunks int) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), d)
+	ctx, cancel := context.WithTimeout(context.Background(), pauseAfter)
 	defer cancel()
 	_, err := New(Config{BaseDir: base, RetryMax: 0}).Download(ctx, Request{URL: url, RelPath: "f.bin", ParallelChunks: chunks})
 	if err == nil {
@@ -259,7 +286,7 @@ func TestDownload_PauseResume_Resumable_BitExact(t *testing.T) {
 	o := newOrigin(t, payload, true, 4*time.Millisecond)
 	base := t.TempDir()
 
-	pauseDownload(t, base, o.srv.URL, 4, 80*time.Millisecond)
+	pauseDownload(t, base, o.srv.URL, 4)
 	o.resetCounters()
 	res := resumeDownload(t, base, o.srv.URL, 4)
 
@@ -385,7 +412,7 @@ func TestDownload_PauseResume_NoRangeSupport_RestartsBitExact_H4(t *testing.T) {
 	o := newOrigin(t, payload, false, 4*time.Millisecond)
 	base := t.TempDir()
 
-	pauseDownload(t, base, o.srv.URL, 1, 80*time.Millisecond)
+	pauseDownload(t, base, o.srv.URL, 1)
 	res := resumeDownload(t, base, o.srv.URL, 1)
 	if res.Resumed {
 		t.Error("Resumed = true for a server without Range support")
@@ -526,10 +553,122 @@ func TestDownload_PauseResume_ContentRangeUnknownTotal_BitExact(t *testing.T) {
 	o := newOrigin(t, payload, true, 4*time.Millisecond, func(o *origin) { o.unknownTotal = true })
 	base := t.TempDir()
 
-	pauseDownload(t, base, o.srv.URL, 4, 80*time.Millisecond)
+	pauseDownload(t, base, o.srv.URL, 4)
 	res := resumeDownload(t, base, o.srv.URL, 4)
 	if !res.Resumed {
 		t.Error("Resumed = false, want the paused transfer to continue")
 	}
 	assertFileEquals(t, res.Path, payload)
+}
+
+// --- M17: resume only the same version of the remote file ---
+
+type validators struct{ etag, lastMod string }
+
+type validatorCase struct {
+	name   string
+	v1, v2 validators
+}
+
+var validatorCases = []validatorCase{
+	{"etag", validators{etag: `"v1"`}, validators{etag: `"v2"`}},
+	{"last-modified", validators{lastMod: "Mon, 05 Oct 2026 10:00:00 GMT"}, validators{lastMod: "Tue, 06 Oct 2026 10:00:00 GMT"}},
+}
+
+// The file behind the URL is replaced by another one of the same size
+// while the download is paused; resuming must not mix the two.
+func TestDownload_RemoteChangedWhilePaused_RestartsWithNewFile_M17(t *testing.T) {
+	for _, tc := range validatorCases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldFile, newFile := randomPayload(512<<10, 12), randomPayload(512<<10, 13)
+			o := newOrigin(t, oldFile, true, 4*time.Millisecond, func(o *origin) { o.etag, o.lastMod = tc.v1.etag, tc.v1.lastMod })
+			base := t.TempDir()
+
+			pauseDownload(t, base, o.srv.URL, 4)
+			o.set(newFile, tc.v2.etag, tc.v2.lastMod)
+			res := resumeDownload(t, base, o.srv.URL, 4)
+
+			if res.Resumed {
+				t.Error("Resumed = true although the remote file changed")
+			}
+			assertFileEquals(t, res.Path, newFile)
+		})
+	}
+}
+
+// The probe still sees the old version (a CDN edge with stale metadata)
+// while the data requests already reach the new file: only If-Range on
+// the ranged GETs can tell, and the 200 it triggers must restart the
+// download instead of writing the new bytes at the old offsets.
+func TestDownload_IfRangeMismatchRestartsFromScratch_M17(t *testing.T) {
+	oldFile, newFile := randomPayload(512<<10, 14), randomPayload(512<<10, 15)
+	o := newOrigin(t, oldFile, true, 4*time.Millisecond, func(o *origin) { o.etag = `"v1"` })
+	base := t.TempDir()
+
+	pauseDownload(t, base, o.srv.URL, 4)
+	o.set(newFile, `"v2"`, "")
+	o.staleHeadOnce(`"v1"`)
+	res := resumeDownload(t, base, o.srv.URL, 4)
+
+	if o.ifRanges.Load() == 0 {
+		t.Error("no ranged GET carried If-Range")
+	}
+	if res.Resumed {
+		t.Error("Resumed = true although the remote file changed")
+	}
+	assertFileEquals(t, res.Path, newFile)
+}
+
+// A state file from before validators were recorded can't prove the
+// remote file is unchanged: start over (no error) instead of resuming.
+func TestDownload_LegacyStateWithoutVersionStartsFresh_M17(t *testing.T) {
+	payload := randomPayload(1<<20, 16)
+	o := newOrigin(t, payload, true, 0)
+	base := t.TempDir()
+	dest := filepath.Join(base, "f.bin")
+
+	half := len(payload) / 2
+	legacy := fmt.Sprintf(`{"url":%q,"size":%d,"resumable":true,"num_chunks":1,"chunks":[{"start":0,"end":%d,"downloaded":%d}]}`,
+		o.srv.URL, len(payload), len(payload)-1, half)
+	if err := os.WriteFile(statePath(dest), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tempPath(dest), payload[:half], 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res := resumeDownload(t, base, o.srv.URL, 1)
+	if res.Resumed {
+		t.Error("Resumed = true for a state file without version/validator")
+	}
+	assertFileEquals(t, dest, payload)
+}
+
+// Normal case: with an unchanged validator a pause and resume continues
+// the transfer and yields a bit-exact file.
+func TestDownload_PauseResume_UnchangedValidator_BitExact(t *testing.T) {
+	// A weak ETag can't be used for If-Range; resuming still works.
+	cases := append(slices.Clone(validatorCases), validatorCase{"weak etag", validators{etag: `W/"v1"`}, validators{}})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := randomPayload(512<<10, 17)
+			o := newOrigin(t, payload, true, 4*time.Millisecond, func(o *origin) { o.etag, o.lastMod = tc.v1.etag, tc.v1.lastMod })
+			base := t.TempDir()
+
+			pauseDownload(t, base, o.srv.URL, 4)
+			o.resetCounters()
+			res := resumeDownload(t, base, o.srv.URL, 4)
+
+			if !res.Resumed {
+				t.Error("Resumed = false, want the paused transfer to continue")
+			}
+			if o.fullGets.Load() != 0 {
+				t.Errorf("%d GETs fetched the whole file again", o.fullGets.Load())
+			}
+			if sent := o.bytesOut.Load(); sent >= int64(len(payload)) {
+				t.Errorf("resume transferred %d bytes, want fewer than the whole file (%d)", sent, len(payload))
+			}
+			assertFileEquals(t, res.Path, payload)
+		})
+	}
 }
