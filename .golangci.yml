@@ -1,0 +1,93 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - gosec
+    - misspell
+    - unconvert
+    - unparam
+  settings:
+    errcheck:
+      # (io.Closer).Close only matches call sites whose *static* type is
+      # the io.Closer interface (e.g. resp.Body, multipart.File) — not
+      # concrete types that merely implement it (*os.File, *bbolt.DB,
+      # *websocket.Conn), which errcheck still flags and which are fixed
+      # at the call site (`defer func(){ _ = x.Close() }()`) instead.
+      # fmt.Fprint*: writing to an http.ResponseWriter is best-effort —
+      # the only failure mode is "client already disconnected", which
+      # isn't actionable in a handler.
+      exclude-functions:
+        - (io.Closer).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    gosec:
+      excludes:
+        # G401/G501: MD5/SHA1 - not used for anything security-sensitive
+        # in this codebase; excluded defensively in case a future dep
+        # trips it incidentally.
+        - G401
+        - G501
+        # G304/G703 (file inclusion via variable, incl. gosec's newer
+        # taint-analysis variant): every dynamic file path in this
+        # codebase is either operator-supplied (CLI flag / config path /
+        # a test-only env var read directly in a _test.go file) or
+        # passed through internal/pathsafe.SafeJoin before use — see that
+        # package's doc comment. Flagging every os.Open(path) call site
+        # individually adds noise, not safety, here.
+        - G304
+        - G703
+        # G117 (marshaled struct field matches secret pattern): Hopper's
+        # core job is moving password fields over JSON (login, hoster
+        # account credentials) — that's not an accidental leak.
+        - G117
+        # G704 (SSRF via taint analysis): internal/dlc's key-service call
+        # sends file-derived data (the dlcKey) as a query *value* (always
+        # url.QueryEscape'd) to a fixed, operator-configured host
+        # (config.DLC.JDAPIURL) — the destination is never influenced by
+        # untrusted input, only a parameter is, which is inherent to how
+        # the real DLC key-exchange protocol works (see crypto.go).
+        - G704
+        # G709 (unsafe deserialization via taint analysis): flags
+        # encoding/xml.Unmarshal on decrypted/untrusted bytes. Go's
+        # stdlib xml package doesn't resolve external entities or expand
+        # DTDs (no XXE) and can't execute code from XML content — the
+        # deserialization-gadget class of bug this rule targets doesn't
+        # apply to it.
+        - G709
+    unparam:
+      check-exported: false
+    misspell:
+      # "alltime" (one word) is the internal/stats/api JSON field name
+      # (GET /api/v1/stats's "alltime" key, AllTimeStats' bbolt bucket
+      # name) — a deliberate identifier, not a typo of "all-time".
+      ignore-rules:
+        - alltime
+  exclusions:
+    rules:
+      # G407 (hardcoded IV): the DLC and Click'n'Load formats *mandate* a
+      # fixed IV (DLC stage 1) or IV = key (DLC stage 2, CnL2) — not a
+      # choice this codebase can make. The tests build protocol-conformant
+      # fixtures with exactly those IVs; production code only decrypts.
+      - path: internal/(dlc|clicknload)/.*_test.go
+        linters: [gosec]
+        text: G407
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

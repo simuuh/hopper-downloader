@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="hopper">
+  <!-- Placeholder mark until the kangaroo icon from docs/BRAND.md exists:
+       a "hop" arc landing in a download arrow, brand colors only. -->
+  <rect x="4" y="4" width="120" height="120" rx="26" fill="#14171b" stroke="#2c323a" stroke-width="4"/>
+  <path d="M30 78 C 34 34, 70 26, 86 52" fill="none" stroke="#2a5c8a" stroke-width="9" stroke-linecap="round" stroke-dasharray="1 15"/>
+  <path d="M86 46 V 90" stroke="#4da3ff" stroke-width="11" stroke-linecap="round"/>
+  <path d="M68 74 L86 93 L104 74" fill="none" stroke="#4da3ff" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M28 104 H 100" stroke="#4caf6f" stroke-width="7" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch/PR makes the running one obsolete —
+# cancel it instead of burning runner minutes on a result nobody reads.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned (not "latest"): .golangci.yml is v2 format and go.mod targets Go
+  # 1.26 — "latest" on golangci-lint-action@v6 resolved to v1.64.8, built
+  # with Go 1.24, which refuses to load either. Bump deliberately (Dependabot
+  # doesn't track this one) after checking `golangci-lint run` locally.
+  GOLANGCI_LINT_VERSION: v2.14.0
+
+jobs:
+  web:
+    name: Web UI (lint + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: web
+      - run: npm run lint
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - name: Browser extension (syntax + behavior)
+        run: |
+          for f in extension/*.js; do node --check "$f"; done
+          node extension/test/validate-extension.js
+
+  go:
+    name: Go (vet, test -race, lint)
+    # Runs in parallel with the web job: tests don't need the real UI, only
+    # something for //go:embed all:dist to embed (web/embed.go).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Placeholder web/dist for go:embed
+        run: mkdir -p web/dist && echo '<!doctype html>' > web/dist/index.html
+      - run: go vet ./...
+      - name: Test (race detector)
+        run: go test ./... -race -timeout 300s
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+  docker:
+    name: Docker image builds
+    # Only where it can catch something the go/web jobs can't: on PRs. A
+    # push to master is followed by a real release build anyway.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build image (not pushed)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

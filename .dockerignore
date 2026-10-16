@@ -1,0 +1,22 @@
+# Do NOT add cmd/, internal/, plugins/, api/, or web/src/ here — the
+# go-builder and web-builder stages in docker/Dockerfile COPY these
+# directly and will fail (or silently ship a stale/empty binary) if
+# they're excluded from the build context.
+
+.git
+.github
+docs
+*.md
+web/node_modules/
+web/dist/
+docker/config/
+docker/downloads/
+/config/
+/downloads/
+*.db
+*.bolt
+**/.env
+docker/secrets.env
+bin/
+.vscode
+.idea

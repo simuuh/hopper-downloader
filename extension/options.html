@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Hopper</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <main>
+    <h1>Hopper</h1>
+    <p class="subtitle">Route Click&rsquo;n&rsquo;Load and .dlc downloads to a remote hopperd.</p>
+
+    <form id="settings-form">
+      <label for="target-url">Target URL</label>
+      <input id="target-url" type="text" placeholder="http://nas.local:9667" autocomplete="off" />
+      <p class="hint">
+        Your hopperd host. Only the hostname is used &mdash; Click&rsquo;n&rsquo;Load
+        redirects always go to port 9666, .dlc import always goes to port 9667
+        (the API port), regardless of the port typed here. hopperd's own CnL
+        listener stays plain HTTP, so the redirect destination keeps whatever
+        scheme you type here (usually <code>http://</code>) &mdash; only the
+        <em>local</em> address this intercepts changed, from
+        <code>http://127.0.0.1:9666</code> to
+        <code>https://127.0.0.1:9666</code>, to match what an HTTPS hoster
+        page's Click&rsquo;n&rsquo;Load button actually targets (browsers
+        block a plain-HTTP request from an HTTPS page as mixed content).
+      </p>
+
+      <label for="api-token">API token (for .dlc import)</label>
+      <input id="api-token" type="password" placeholder="paste a JWT from hopperd" autocomplete="off" />
+      <p class="hint">
+        Only needed for automatic .dlc/.txt import &mdash; Click&rsquo;n&rsquo;Load
+        redirection works without one. Obtain a token by logging in
+        (<code>hopperctl login</code> or the Web UI) and copying it from
+        <code>~/.config/hopper/hopperctl.json</code> (Linux/macOS) or
+        <code>%APPDATA%\hopper\hopperctl.json</code> (Windows). Tokens expire
+        after <code>server.token_ttl</code> (24h by default) &mdash; set it
+        longer in <code>hopper.yaml</code> if you rely on this. Stored
+        locally on this device only, never synced.
+      </p>
+
+      <label class="checkbox-row">
+        <input id="dlc-enabled" type="checkbox" />
+        Enable .dlc/.txt download interception
+      </label>
+
+      <button type="submit">Save</button>
+      <span id="save-status" role="status"></span>
+    </form>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

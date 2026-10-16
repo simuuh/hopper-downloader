@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest an improvement or a new hoster plugin
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that Hopper doesn't support well?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposal
+      description: How could Hopper solve it? For a hoster plugin, link the hoster's API documentation.

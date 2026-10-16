@@ -1,0 +1,42 @@
+# Build artifacts
+/bin/
+/dist/
+/hopperd
+/hopperd.exe
+/hopperctl
+/hopperctl.exe
+hopperd.exe
+
+# Go
+*.test
+*.out
+vendor/
+
+# Web (built by `npm run build` / CI before `go build`; see CONTRIBUTING.md)
+web/node_modules/
+web/dist/
+
+# Runtime data
+/config/
+/downloads/
+# Real .dlc test files (personal test artifacts, may reference real
+# hoster content/filenames) — use HOPPER_DLC_TEST_FILE, see
+# internal/dlc/diagnostic_test.go, instead of committing one.
+*.dlc
+docker/config/
+docker/downloads/
+*.db
+*.bolt
+hopper.yaml
+.env
+docker/.env
+docker/secrets.env
+
+hopper.yaml
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

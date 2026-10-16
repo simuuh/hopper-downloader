@@ -1,0 +1,39 @@
+# Hopper — build and run from a git checkout (development, unreleased
+# changes). To just install Hopper, use the docker-compose.yml in the
+# repository root instead (no checkout needed, see README).
+#
+#   cd docker
+#   docker compose up --build -d
+#   docker compose logs hopperd     # first start: shows the admin password
+#
+# Same settings as the install: put them into docker/.env (start from
+# ../.env.example — PUID/PGID, CONFIG_DIR, DOWNLOADS_DIR, WEB_PORT,
+# CNL_HOST, CNL_PORT, and any HOPPER_* setting for hopperd itself).
+# docker/secrets.env is still read if present (older installs: explicit
+# secrets there win over the generated ones).
+services:
+  hopperd:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ghcr.io/simuuh/hopper-downloader:dev
+    # Always build from this checkout instead of reusing a pulled image.
+    pull_policy: build
+    container_name: hopperd
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+      - path: secrets.env
+        required: false
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      HOPPER_CLICKNLOAD_HOST: 0.0.0.0
+      HOPPER_CLICKNLOAD_TRUSTED_CIDRS: 127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7
+    volumes:
+      - ${CONFIG_DIR:-./config}:/config
+      - ${DOWNLOADS_DIR:-./downloads}:/downloads
+    ports:
+      - "${WEB_PORT:-9667}:9667"
+      - "${CNL_HOST:-127.0.0.1}:${CNL_PORT:-9666}:9666"

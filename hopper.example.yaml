@@ -1,0 +1,155 @@
+# Hopper example configuration — entirely optional.
+#
+# Without any config file hopperd runs on these defaults; override single
+# values with the matching HOPPER_* environment variable (see
+# docs/ARCHITECTURE.md, Deployment). Copy to hopper.yaml only if you want
+# to change something not exposed as a variable. ${VAR} references below
+# are expanded from the environment at load time.
+#
+# server.jwt_secret, server.admin_password_hash and accounts.encryption_key
+# are generated on first start if left empty, and kept in secrets.json
+# next to the database (/config under Docker) — keep that file: it holds
+# the key that decrypts your stored hoster accounts. The generated admin
+# password is printed once on first start (docker compose logs hopperd);
+# change it with: hopperd -set-admin-password
+
+server:
+  host: 0.0.0.0
+  port: 9667
+  jwt_secret: ${HOPPER_JWT_SECRET}
+  # Generate with: hopperctl hash-password
+  admin_password_hash: ${HOPPER_ADMIN_PASSWORD_HASH}
+  # How long an issued JWT stays valid (the Web UI session length,
+  # effectively) before requiring a fresh login — 24h is the default and
+  # already the recommended value; raise it if you find yourself logged
+  # out more often than you'd like, there's no downside besides a
+  # slightly longer window a stolen token would remain usable in.
+  # POST /api/v1/auth/refresh lets the Web UI silently extend a
+  # still-valid session (used before a bulk action so a long multi-select
+  # operation's parallel requests don't 401 mid-batch if the token
+  # happens to expire partway through) without needing this raised at
+  # all, but a longer value here still means fewer logins for a browser
+  # tab left open across days.
+  token_ttl: 24h
+  cors_allowed_origins: []
+  read_header_timeout: 10s
+  # tls_cert_file: /config/tls/cert.pem
+  # tls_key_file: /config/tls/key.pem
+
+downloads:
+  path: /downloads
+  parallel_files: 3
+  parallel_chunks: 4
+  bandwidth_limit: 0 # bytes/s, 0 = unlimited
+  retry_max: 5
+  retry_backoff_base: 2s
+  # Start links from Click'n'Load and .dlc/.txt imports right away.
+  # false = add them paused for review first (Web UI: "Start"). Can be
+  # changed live in Settings; once changed there, the saved value wins.
+  auto_start_imports: true # default true
+
+clicknload:
+  enabled: true
+  host: 127.0.0.1
+  port: 9666
+  trusted_cidrs:
+    - 127.0.0.1/32
+    - ::1/128
+  # NAS/homelab scenario (hopperd on a server, browser on another
+  # machine): bind to all interfaces and trust the LAN the browser is
+  # on. Use hopperctl (Phase 2 `hopperctl proxy`) or the browser
+  # extension on the client so hoster "Click'n'Load" buttons still find
+  # a listener on 127.0.0.1:9666 locally, forwarding to this address.
+  #
+  # Under Docker Compose none of this is needed: the Compose files already
+  # bind 0.0.0.0 and trust the private ranges inside the container; LAN
+  # reachability is set with CNL_HOST=0.0.0.0 in .env (see
+  # docs/REMOTE_CLICKNLOAD.md).
+  # host: "0.0.0.0"
+  # trusted_cidrs:
+  #   - 127.0.0.1/32
+  #   - 192.168.1.0/24    # your LAN CIDR
+
+accounts:
+  # Exactly 32 bytes (AES-256). Generate with: openssl rand -base64 24 | cut -c1-32
+  encryption_key: ${HOPPER_ENCRYPTION_KEY}
+  # "Buy / extend premium" buttons in the Web UI use the Hopper developer's
+  # referral link where one is configured (supports development, costs you
+  # nothing extra). false = always the plain hoster page. hopperd itself
+  # never contacts anything for this; it only changes the link a button
+  # opens.
+  referral_links: true # default true
+
+# Optional per-hoster overrides, keyed by plugin name. Absent entries mean
+# "no per-hoster limit" beyond the global downloads.bandwidth_limit.
+# hosters:
+#   rapidgator:
+#     bandwidth_limit: 0
+#     min_request_interval: 30s
+
+ratelimit:
+  requests_per_minute: 120
+  burst: 30
+
+logging:
+  level: info # debug|info|warn|error
+  format: json # json|text
+
+database:
+  path: /config/hopper.db
+
+dlc:
+  enabled: true
+  jd_api_url: http://service.jdownloader.org/dlcrypt/service.php
+
+extract:
+  # Disabled by default: shells out to an external unrar binary for .rar
+  # archives, which isn't installed everywhere and isn't something Hopper
+  # should do to your downloads without opt-in.
+  enabled: false
+  # Delete the archive (all parts, for a multi-part RAR) once extraction
+  # succeeds. Never applies on a failed extraction.
+  delete_after: true
+  unrar_path: unrar
+  # Tried, in order, after the package's own password (e.g. from a DLC or
+  # Click'n'Load). Hopper ships no built-in password list.
+  passwords: []
+  # How long to wait for every part of a multi-part archive to actually
+  # become visible on disk before giving up (a download reporting done
+  # and its file being fully durable/visible aren't always simultaneous,
+  # especially over a network-mounted downloads volume). Raise these if
+  # extraction is failing with "not all archive parts are present on
+  # disk" against a slow NAS mount.
+  part_wait_attempts: 10 # default (was 5)
+  part_wait_interval: 500ms # default (was 200ms)
+
+queue:
+  # Downloads start top to bottom, package by package, like the Web UI
+  # shows them; free slots go to the topmost package first. With
+  # sequential_parts, a multi-part archive's parts never overtake each
+  # other (part3 doesn't start before part1 and part2 have started), even
+  # if part1 is still waiting e.g. on a hoster's retry delay.
+  sequential_parts: true # default true
+  # Automatically re-queue a download that failed for a transient reason
+  # (network error, hoster temporarily unavailable/rate limiting, dropped
+  # connection) up to this many times before leaving it in the error
+  # state. The wait starts at auto_retry_delay and doubles each attempt
+  # (max 30m); the Web UI shows it as a "waiting" countdown. Permanent
+  # failures (file not found, no usable account) are never auto-retried.
+  # 0 disables.
+  auto_retry: 3 # default 3
+  auto_retry_delay: 30s # default 30s
+
+notify:
+  # Push a notification whenever a package finishes (all its downloads
+  # done or failed, and extraction — if it applies — finished too). Both
+  # targets are optional and independent; leave empty to disable.
+  #
+  # Generic webhook: receives a JSON POST per finished package (fields:
+  # event, package_id, package, status, items, done, failed, bytes,
+  # extract, path, finished_at) — for Home Assistant, n8n, Node-RED,
+  # or your own script, e.g. to hand the folder to Sonarr/Radarr.
+  webhook_url: "" # env: HOPPER_NOTIFY_WEBHOOK_URL
+  # ntfy (https://ntfy.sh or self-hosted): the full topic URL.
+  ntfy_url: "" # env: HOPPER_NOTIFY_NTFY_URL, e.g. https://ntfy.sh/my-hopper
+  ntfy_token: "" # env: HOPPER_NOTIFY_NTFY_TOKEN (only for protected topics)

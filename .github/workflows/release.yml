@@ -1,0 +1,299 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  packages: write
+
+# Never cancel a release half-way; queue a second tag behind the first.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist
+          retention-days: 1
+
+  build-binaries:
+    needs: build-web
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build hopperd + hopperctl
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          ext=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
+            -o "dist/hopperd-${{ matrix.goos }}-${{ matrix.goarch }}${ext}" ./cmd/hopperd
+          go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
+            -o "dist/hopperctl-${{ matrix.goos }}-${{ matrix.goarch }}${ext}" ./cmd/hopperctl
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+
+  build-extension:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Zip browser extension
+        run: |
+          mkdir -p dist
+          cd extension
+          zip -r ../dist/hopper-extension.zip .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: extension
+          path: dist/hopper-extension.zip
+          retention-days: 1
+
+  # Signs the same extension/ source for Firefox via Mozilla's official
+  # web-ext CLI and addons.mozilla.org (AMO) API — a raw zip is NOT
+  # installable in a normal (non-Developer-Edition/ESR-with-signing-
+  # disabled) Firefox; AMO signing is required even for self-hosted/
+  # "unlisted" distribution, there's no way around it the way Chrome/Edge
+  # allow loading an unsigned .zip. Requires AMO_API_KEY/AMO_API_SECRET
+  # repo secrets (Mozilla Add-on Developer Hub → "Manage API Keys" —
+  # https://addons.mozilla.org/developers/addon/api/key/); this step
+  # can't be provisioned or end-to-end tested without a real Mozilla
+  # account, so it degrades gracefully (skips signing, not the release)
+  # when those secrets aren't configured yet rather than failing the
+  # whole pipeline. See extension/manifest.json's browser_specific_
+  # settings for the Firefox-side id/strict_min_version this submission
+  # is tied to.
+  sign-extension-firefox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Sign for Firefox (AMO)
+        id: sign
+        run: |
+          if [ -z "${{ secrets.AMO_API_KEY }}" ] || [ -z "${{ secrets.AMO_API_SECRET }}" ]; then
+            echo "AMO_API_KEY/AMO_API_SECRET repo secrets are not set — skipping Firefox signing for this release. See this job's own comment in release.yml for how to obtain them."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          npx --yes web-ext@latest sign \
+            --source-dir extension \
+            --artifacts-dir dist \
+            --channel unlisted \
+            --api-key "${{ secrets.AMO_API_KEY }}" \
+            --api-secret "${{ secrets.AMO_API_SECRET }}"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        if: steps.sign.outputs.signed == 'true'
+        with:
+          name: extension-firefox
+          path: dist/*.xpi
+          retention-days: 1
+
+  # Multi-arch image without QEMU: each architecture builds natively on its
+  # own runner and pushes by digest; docker-manifest then stitches the
+  # digests into one multi-arch tag. (This job used to emulate arm64 via
+  # QEMU — 90+ minutes per release — and was cut back to amd64-only.)
+  # GitHub's native arm64 runners (ubuntu-24.04-arm) are free for public
+  # repos only, so docker-plan includes arm64 only once the repo is public;
+  # a private repo still gets the amd64 image. The Go binaries
+  # (build-binaries) cross-compile for every target regardless.
+  docker-plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      image: ${{ steps.plan.outputs.image }}
+    steps:
+      - id: plan
+        run: |
+          echo "image=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event.repository.private }}" = "true" ]; then
+            echo 'matrix={"include":[{"platform":"linux/amd64","runner":"ubuntu-latest"}]}' >> "$GITHUB_OUTPUT"
+          else
+            echo 'matrix={"include":[{"platform":"linux/amd64","runner":"ubuntu-latest"},{"platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]}' >> "$GITHUB_OUTPUT"
+          fi
+
+  docker:
+    needs: docker-plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix: ${{ fromJSON(needs.docker-plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: arch
+        run: echo "name=${PLATFORM#linux/}" >> "$GITHUB_OUTPUT"
+        env:
+          PLATFORM: ${{ matrix.platform }}
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          # Links the ghcr.io package to this repo (README, visibility,
+          # permissions) — without it the package shows up orphaned.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.licenses=MIT
+          cache-from: type=gha,scope=${{ steps.arch.outputs.name }}
+          cache-to: type=gha,mode=max,scope=${{ steps.arch.outputs.name }}
+          outputs: type=image,name=${{ needs.docker-plan.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ steps.arch.outputs.name }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  docker-manifest:
+    needs: [docker-plan, docker]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: /tmp/digests
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create multi-arch tags
+        working-directory: /tmp/digests
+        env:
+          IMAGE: ${{ needs.docker-plan.outputs.image }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          docker buildx imagetools create -t "$IMAGE:$TAG" -t "$IMAGE:latest" \
+            $(printf "$IMAGE@sha256:%s " *)
+          docker buildx imagetools inspect "$IMAGE:$TAG"
+
+  release:
+    needs: [build-binaries, build-extension, sign-extension-firefox, docker-manifest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: binaries-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: extension
+          path: dist
+      - name: Download signed Firefox extension (if AMO signing was configured)
+        # sign-extension-firefox only uploads this artifact when
+        # AMO_API_KEY/AMO_API_SECRET are configured — continue-on-error
+        # so a release isn't blocked on a Firefox-signing setup step
+        # that's optional and can't be provisioned by this workflow
+        # itself (see that job's own comment).
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: extension-firefox
+          path: dist
+      # The install files (also fetched straight from main, see README) are
+      # attached to every release too, so a pinned version can be
+      # installed with the matching compose file.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            docker-compose.yml
+            .env.example
+          sparse-checkout-cone-mode: false
+          path: src
+      - name: Docker Compose file and .env template
+        run: cp src/docker-compose.yml src/.env.example dist/
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > checksums.txt
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## Install / update with Docker
+
+            ```sh
+            mkdir hopper && cd hopper
+            curl -fsSLO https://raw.githubusercontent.com/${{ github.repository }}/main/docker-compose.yml
+            curl -fsSLo .env https://raw.githubusercontent.com/${{ github.repository }}/main/.env.example
+            docker compose up -d
+            docker compose logs hopperd   # first start: admin password
+            ```
+
+            Settings go into `.env`; the compose file stays untouched.
+
+            Update an existing install: `docker compose pull && docker compose up -d`

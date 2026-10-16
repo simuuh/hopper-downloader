@@ -1,0 +1,36 @@
+# Weekly, grouped dependency updates — one PR per ecosystem instead of a
+# PR per package, to keep the noise (and CI runs) down.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      actions: { patterns: ['*'] }
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      go: { patterns: ['*'] }
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule: { interval: weekly }
+    groups:
+      web: { patterns: ['*'] }
+
+  - package-ecosystem: docker
+    directory: /docker
+    schedule: { interval: monthly }
+    ignore:
+      # Go: stay on a toolchain golangci-lint/govulncheck releases can load
+      # (go.mod toolchain go1.26.x); bump go.mod, CI and Dockerfile together.
+      - dependency-name: golang
+        versions: ['>= 1.27']
+      # Node: LTS (even) majors only.
+      - dependency-name: node
+        versions: ['>= 25']
+      # Debian major: unrar comes from non-free and must be re-verified.
+      - dependency-name: debian
+        versions: ['>= 13']

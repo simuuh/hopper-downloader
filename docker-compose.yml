@@ -1,0 +1,45 @@
+# Hopper — Docker install. Nothing to edit here: settings go into .env
+# next to this file (start from .env.example; without .env the defaults
+# below apply).
+#
+#   mkdir hopper && cd hopper
+#   curl -fsSLO https://raw.githubusercontent.com/simuuh/hopper-downloader/main/docker-compose.yml
+#   curl -fsSLo .env https://raw.githubusercontent.com/simuuh/hopper-downloader/main/.env.example
+#   docker compose up -d
+#   docker compose logs hopperd        # first start: shows the admin password
+#
+# Update: docker compose pull && docker compose up -d
+#
+# Requires Docker Compose 2.24+ (optional env_file). To build from a git
+# checkout instead, see docker/docker-compose.yml.
+services:
+  hopperd:
+    image: ghcr.io/simuuh/hopper-downloader:${IMAGE_TAG:-latest}
+    container_name: hopperd
+    restart: unless-stopped
+    # Every HOPPER_* line in .env configures hopperd itself; the other
+    # variables (PUID, ports, paths) are only used by this file and the
+    # entrypoint — they deliberately never start with HOPPER_, so they
+    # can't be mistaken for one of hopperd's own settings.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # The container starts as root only to make /config and the downloads
+      # folder writable for PUID:PGID, then runs hopperd as that user.
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      # Click'n'Load listens on all interfaces inside the container; whether
+      # it's reachable from outside is decided by the port binding below
+      # (CNL_HOST). Requests from the host arrive from Docker's bridge
+      # network, hence the private ranges.
+      HOPPER_CLICKNLOAD_HOST: 0.0.0.0
+      HOPPER_CLICKNLOAD_TRUSTED_CIDRS: 127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7
+    volumes:
+      - ${CONFIG_DIR:-./config}:/config
+      - ${DOWNLOADS_DIR:-./downloads}:/downloads
+    ports:
+      - "${WEB_PORT:-9667}:9667"
+      # Click'n'Load: loopback only by default (browser on the same host);
+      # CNL_HOST=0.0.0.0 makes it reachable from your LAN.
+      - "${CNL_HOST:-127.0.0.1}:${CNL_PORT:-9666}:9666"

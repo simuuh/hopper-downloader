@@ -1,0 +1,9 @@
+# Normalize line endings: LF in the repo and in every checkout. Shell
+# scripts (docker/setup.sh) and the Dockerfile break with CRLF on Linux.
+* text=auto eol=lf
+
+*.png  binary
+*.ico  binary
+*.jpg  binary
+*.woff binary
+*.woff2 binary

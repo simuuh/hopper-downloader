@@ -1,0 +1,952 @@
+openapi: 3.0.3
+info:
+  title: Hopper API
+  description: >
+    Privacy-first download manager REST API. Every /api/v1 endpoint
+    requires a Bearer JWT obtained from /api/v1/auth/login, except login
+    itself. /healthz is unauthenticated (used by Docker HEALTHCHECK).
+  version: "1.0"
+servers:
+  - url: /api/v1
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/login:
+    post:
+      operationId: login
+      summary: Exchange the admin password for a JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /auth/refresh:
+    post:
+      operationId: refreshToken
+      summary: Exchange a still-valid JWT for a fresh one with a full new expiry
+      description: >-
+        Requires a currently-valid Bearer token, same as any other
+        endpoint (an already-expired token is rejected before this
+        handler runs, so this cannot resurrect a dead session — only
+        extend a live one). Intended for long-running client-side
+        operations (e.g. a bulk action over many selected items) to
+        avoid the token expiring partway through.
+      responses:
+        '200':
+          description: Refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          $ref: '#/components/responses/Error'
+
+  /links:
+    post:
+      operationId: addLink
+      summary: Queue a single URL
+      description: >-
+        If url is recognized by a plugin that represents multiple files
+        behind one link (e.g. a multi-part archive wrapped by a link
+        redirector), every part is queued as its own item under one new
+        package — this response is only the first of them; see the
+        others via GET /queue or GET /packages.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddLinkRequest'
+      responses:
+        '201':
+          description: Queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueItem'
+        '400':
+          $ref: '#/components/responses/Error'
+
+  /links/bulk:
+    post:
+      operationId: addLinks
+      summary: Queue many links at once, grouped per release
+      description: >-
+        Every http(s) URL found in text (free text: one per line, or pasted
+        from a forum post/HTML) plus urls is queued. Archive parts are
+        grouped per release (movie.part1.rar … partN.rar → one package);
+        parts of a release that is already queued are merged into its
+        existing package; duplicates (same URL, or the same filename
+        already in the target package) are skipped and listed in
+        duplicates. name is used for a single-release submission; path, if
+        set, becomes every resulting package's "save to" directory.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddLinksRequest'
+      responses:
+        '201':
+          description: Queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddLinksResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+
+  /packages:
+    post:
+      operationId: addPackage
+      summary: Queue multiple URLs as a named package
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddPackageRequest'
+      responses:
+        '201':
+          description: Queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddPackageResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+    get:
+      operationId: listPackages
+      summary: List packages
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Package'
+
+  /packages/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      operationId: patchPackage
+      summary: Rename a package and/or set its "save to" path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                path: { type: string, description: 'subfolder below downloads.path; "" clears the override' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Package'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deletePackage
+      summary: Remove a package and all its items (files on disk are kept)
+      responses:
+        '200':
+          description: Removed
+          content:
+            application/json:
+              schema: { type: object, properties: { changed: { type: integer } } }
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /packages/{id}/links:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: addToPackage
+      summary: Add links to an existing package (missing parts, mirrors)
+      description: >
+        Container links are expanded and duplicates skipped like
+        POST /links/bulk, but every new item goes into this package.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text: { type: string, description: free text containing http(s) URLs }
+                urls: { type: array, items: { type: string } }
+      responses:
+        '201':
+          description: Added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddLinksResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /packages/{id}/{action}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+      - name: action
+        in: path
+        required: true
+        schema: { type: string, enum: [pause, resume, retry] }
+    post:
+      operationId: packageAction
+      summary: Pause, resume or retry every applicable item of a package
+      responses:
+        '200':
+          description: Applied
+          content:
+            application/json:
+              schema: { type: object, properties: { changed: { type: integer } } }
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /queue:
+    get:
+      operationId: listQueue
+      summary: List queue items
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/QueueItem'
+    delete:
+      operationId: bulkCancelQueueItems
+      summary: Cancel and remove multiple queue items in one request
+      description: >-
+        Added so a "Clear done"/bulk-cancel click on many items is one
+        request (and one rate-limit hit) instead of firing one
+        DELETE /queue/{id} per item in parallel, which could trip the
+        API's per-client rate limiter on a large batch. A per-id failure
+        (e.g. an id that no longer exists) doesn't fail the whole
+        request — it's reported back in failed instead.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkCancelRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkCancelResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+
+  /queue/order:
+    put:
+      operationId: reorderQueue
+      summary: Reorder queue items (drag-to-reorder)
+      description: >
+        Items not mentioned keep their existing position; this is
+        typically called with every currently-visible item's ID in the
+        desired order.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderRequest'
+      responses:
+        '204':
+          description: Reordered
+
+  /queue/{id}:
+    get:
+      operationId: getQueueItem
+      summary: Get one queue item
+      parameters: [ { $ref: '#/components/parameters/ItemID' } ]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueItem'
+        '404':
+          $ref: '#/components/responses/Error'
+    patch:
+      operationId: patchQueueItem
+      summary: Change priority, URL or filename of a queue item
+      description: >
+        url and filename can only be changed while the item is queued,
+        paused or failed (409 otherwise). A new url re-matches the hoster
+        plugin and restarts a failed item. filename "" clears the override.
+      parameters: [ { $ref: '#/components/parameters/ItemID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                priority: { $ref: '#/components/schemas/Priority' }
+                url: { type: string }
+                filename: { type: string }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueItem'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: cancelQueueItem
+      summary: Cancel and remove a queue item
+      description: Does not delete any partially downloaded file on disk.
+      parameters: [ { $ref: '#/components/parameters/ItemID' } ]
+      responses:
+        '204':
+          description: Cancelled
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /queue/{id}/pause:
+    post:
+      operationId: pauseQueueItem
+      summary: Pause a queued or downloading item
+      parameters: [ { $ref: '#/components/parameters/ItemID' } ]
+      responses:
+        '200':
+          description: Paused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueItem'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: Item is not in a pausable state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /queue/{id}/resume:
+    post:
+      operationId: resumeQueueItem
+      summary: Resume a paused item
+      parameters: [ { $ref: '#/components/parameters/ItemID' } ]
+      responses:
+        '200':
+          description: Resumed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueItem'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: Item is not paused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /queue/{id}/retry:
+    post:
+      operationId: retryQueueItem
+      summary: Requeue a failed item
+      parameters: [ { $ref: '#/components/parameters/ItemID' } ]
+      responses:
+        '200':
+          description: Requeued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueItem'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: Item is not in an error state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /queue/{id}/extract:
+    post:
+      operationId: retryExtractQueueItem
+      summary: Re-run extraction for an item with a failed archive extraction
+      description: >-
+        Only valid for an item that is state=done with
+        extract_state=extract_failed. Resets extract_state and re-runs
+        extraction in the background; watch /ws for the outcome. The
+        request body is optional.
+      parameters: [ { $ref: '#/components/parameters/ItemID' } ]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetryExtractRequest'
+      responses:
+        '200':
+          description: Re-extraction started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueItem'
+        '400':
+          description: Item is not done/extract_failed, or its archive is no longer on disk
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /queue/{id}/captcha:
+    post:
+      operationId: solveCaptchaQueueItem
+      summary: Submit a solution for an item's pending free-download captcha
+      description: >-
+        Clears captcha_url and retries the download immediately. Requires
+        a non-empty solution and an item with a captcha currently pending.
+      parameters: [ { $ref: '#/components/parameters/ItemID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SolveCaptchaRequest'
+      responses:
+        '200':
+          description: Solution recorded, retry triggered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueItem'
+        '400':
+          description: Empty solution, or the item has no captcha pending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /accounts:
+    get:
+      operationId: listAccounts
+      summary: List hoster accounts (no secrets)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Account'
+    post:
+      operationId: addAccount
+      summary: Add a hoster account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddAccountRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+
+  /accounts/{id}/enabled:
+    post:
+      operationId: setAccountEnabled
+      summary: Enable or disable an account
+      parameters: [ { $ref: '#/components/parameters/AccountID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /accounts/{id}:
+    put:
+      operationId: updateAccount
+      summary: Replace an account's credentials (e.g. new token after renewing premium)
+      description: >-
+        Empty/omitted fields keep the stored value. The cached validation
+        result is cleared and the account is re-validated inline, like
+        POST /accounts.
+      parameters: [ { $ref: '#/components/parameters/AccountID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                password: { type: string }
+                extra: { type: object, additionalProperties: { type: string } }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+    delete:
+      operationId: deleteAccount
+      summary: Delete an account
+      parameters: [ { $ref: '#/components/parameters/AccountID' } ]
+      responses:
+        '204':
+          description: Deleted
+        '404':
+          $ref: '#/components/responses/Error'
+
+  /config:
+    get:
+      operationId: getConfig
+      summary: Read the active (redacted) configuration
+      description: Never includes jwt_secret, admin_password_hash, or accounts.encryption_key.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /notify:
+    get:
+      operationId: getNotifyStatus
+      summary: Whether a push notification target (webhook/ntfy) is configured
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { enabled: { type: boolean } } }
+
+  /notify/test:
+    post:
+      operationId: testNotify
+      summary: Send a sample "package finished" notification to every configured target
+      responses:
+        '204':
+          description: Delivered
+        '400':
+          $ref: '#/components/responses/Error'
+        '502':
+          $ref: '#/components/responses/Error'
+
+  /stats:
+    get:
+      operationId: getStats
+      summary: Download activity stats (session/today/week/month/year/all-time)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Stats'
+
+  /import:
+    post:
+      operationId: importFile
+      summary: Import .dlc containers and/or plaintext link lists
+      description: >-
+        One or more files in the repeatable "file" field. Links are grouped
+        and merged exactly like POST /links/bulk. A file that fails to
+        parse or contains no links is reported in errors without failing
+        the others; the request fails (400) only if nothing was queued.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '201':
+          description: Imported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    ItemID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    AccountID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, example: admin }
+        password: { type: string, format: password }
+
+    LoginResponse:
+      type: object
+      properties:
+        token: { type: string }
+        expires_at: { type: string, format: date-time }
+
+    Priority:
+      type: string
+      enum: [low, normal, high]
+
+    ItemState:
+      type: string
+      enum: [queued, downloading, paused, done, error]
+
+    ExtractState:
+      type: string
+      enum: [extracting, extracted, extract_failed]
+      description: >-
+        Absent/empty means "not an archive, or extraction is
+        disabled/hasn't run".
+
+    QueueItem:
+      type: object
+      properties:
+        id: { type: string }
+        package_id: { type: string }
+        url: { type: string }
+        filename: { type: string }
+        password: { type: string }
+        hoster_key: { type: string }
+        priority: { $ref: '#/components/schemas/Priority' }
+        state: { $ref: '#/components/schemas/ItemState' }
+        position: { type: integer, format: int64 }
+        size: { type: integer, format: int64 }
+        downloaded: { type: integer, format: int64 }
+        speed: { type: integer, format: int64, description: bytes/sec }
+        error: { type: string }
+        extract_state: { $ref: '#/components/schemas/ExtractState' }
+        extract_error: { type: string }
+        scheduled_at: { type: string, format: date-time }
+        retry_after:
+          type: string
+          format: date-time
+          description: >-
+            Set when a hoster's free-download fallback asked the client to
+            wait before retrying; the item stays state=queued the whole
+            time and is retried automatically once this time passes.
+        attempts:
+          type: integer
+          description: >-
+            Automatic retries used after transient failures (queue.auto_retry);
+            while waiting for the next one retry_after is set and error
+            carries the reason.
+        captcha_url:
+          type: string
+          description: >-
+            Set when a hoster's free-download fallback requires solving a
+            captcha before the item can proceed; see POST
+            /queue/{id}/captcha. At most one of retry_after/captcha_url is
+            ever set at a time.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Package:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        password: { type: string }
+        created_at: { type: string, format: date-time }
+
+    AddLinksRequest:
+      type: object
+      properties:
+        text: { type: string, description: free text containing http(s) URLs }
+        urls: { type: array, items: { type: string } }
+        name: { type: string }
+        password: { type: string }
+        priority: { $ref: '#/components/schemas/Priority' }
+        path: { type: string }
+
+    AddLinksResponse:
+      type: object
+      properties:
+        packages: { type: array, items: { $ref: '#/components/schemas/Package' } }
+        items: { type: array, items: { $ref: '#/components/schemas/QueueItem' } }
+        duplicates: { type: array, items: { type: string }, description: skipped URLs }
+
+    ImportResponse:
+      allOf:
+        - $ref: '#/components/schemas/AddLinksResponse'
+        - type: object
+          properties:
+            errors: { type: array, items: { type: string }, description: per-file problems }
+
+    AddLinkRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string }
+        priority: { $ref: '#/components/schemas/Priority' }
+        scheduled_at: { type: string, format: date-time }
+        filename: { type: string }
+        password: { type: string }
+        hoster_key: { type: string }
+
+    AddPackageRequest:
+      type: object
+      required: [name, urls]
+      properties:
+        name: { type: string }
+        urls: { type: array, items: { type: string } }
+        priority: { $ref: '#/components/schemas/Priority' }
+        scheduled_at: { type: string, format: date-time }
+        password: { type: string }
+
+    RetryExtractRequest:
+      type: object
+      properties:
+        password:
+          type: string
+          description: >-
+            Tried ahead of the persisted extract_passwords list for this
+            attempt only; never written to settings.
+
+    SolveCaptchaRequest:
+      type: object
+      required: [solution]
+      properties:
+        solution:
+          type: string
+          description: The captcha's solution, as submitted by the user.
+
+    AddPackageResponse:
+      type: object
+      properties:
+        package: { $ref: '#/components/schemas/Package' }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/QueueItem' }
+
+    ReorderRequest:
+      type: object
+      required: [ids]
+      properties:
+        ids: { type: array, items: { type: string } }
+
+    BulkCancelRequest:
+      type: object
+      required: [ids]
+      properties:
+        ids: { type: array, items: { type: string } }
+
+    BulkCancelResponse:
+      type: object
+      properties:
+        deleted: { type: array, items: { type: string } }
+        failed: { type: array, items: { type: string } }
+
+    Account:
+      type: object
+      properties:
+        id: { type: string }
+        hoster_key: { type: string }
+        username: { type: string }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        cooldown_until:
+          type: string
+          format: date-time
+          description: >
+            Set while the account is skipped because a hoster rejected it
+            during a download (expired, out of traffic); the hoster's other
+            accounts are used meanwhile.
+
+    AddAccountRequest:
+      type: object
+      required: [hoster_key, username, password]
+      properties:
+        hoster_key: { type: string }
+        username: { type: string }
+        password: { type: string, format: password }
+        extra:
+          type: object
+          additionalProperties: { type: string }
+
+    Stats:
+      type: object
+      description: >-
+        Every period the stats dashboard shows, in one call — no query
+        params needed. week/month/year are 7/30/365-day AggregateStats
+        windows ending today (inclusive).
+      properties:
+        session: { $ref: '#/components/schemas/SessionStats' }
+        today: { $ref: '#/components/schemas/DailyStats' }
+        week: { $ref: '#/components/schemas/AggregateStats' }
+        month: { $ref: '#/components/schemas/AggregateStats' }
+        year: { $ref: '#/components/schemas/AggregateStats' }
+        alltime: { $ref: '#/components/schemas/AllTimeStats' }
+
+    DailyStats:
+      type: object
+      description: One calendar day's download activity (server-local date).
+      properties:
+        date: { type: string, format: date, example: '2026-07-27' }
+        bytes_total: { type: integer, format: int64 }
+        files_total: { type: integer, format: int64 }
+        errors: { type: integer, format: int64 }
+        by_hoster:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+          description: Hoster key → bytes downloaded that day.
+
+    AllTimeStats:
+      type: object
+      description: Running totals since Hopper was first set up.
+      properties:
+        bytes_total: { type: integer, format: int64 }
+        files_total: { type: integer, format: int64 }
+        errors: { type: integer, format: int64 }
+        peak_speed: { type: integer, format: int64, description: Highest instantaneous speed ever observed, bytes/sec. }
+        largest_file: { type: integer, format: int64 }
+        by_hoster:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+
+    SessionStats:
+      type: object
+      description: >-
+        Activity since this hopperd process started. In-memory only —
+        resets on restart, which is correct behavior, not a bug.
+      properties:
+        started_at: { type: string, format: date-time }
+        bytes_total: { type: integer, format: int64 }
+        files_total: { type: integer, format: int64 }
+        errors: { type: integer, format: int64 }
+        peak_speed: { type: integer, format: int64 }
+        by_hoster:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+
+    AggregateStats:
+      type: object
+      description: >-
+        Days worth of DailyStats summed, ending today (inclusive). daily
+        carries one entry per day in the range, oldest first, so a
+        day with no activity still appears (zero-valued, Date set) rather
+        than being omitted.
+      properties:
+        days: { type: integer }
+        bytes_total: { type: integer, format: int64 }
+        files_total: { type: integer, format: int64 }
+        errors: { type: integer, format: int64 }
+        by_hoster:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+        daily:
+          type: array
+          items: { $ref: '#/components/schemas/DailyStats' }
