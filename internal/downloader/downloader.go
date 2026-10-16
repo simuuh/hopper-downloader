@@ -313,6 +313,14 @@ func (e *Engine) Download(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("downloader: open temp file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
+	// A fresh start may find a .part left over from another URL, size or
+	// an aborted attempt; its bytes beyond what this transfer writes would
+	// otherwise end up in the finished file.
+	if !resumed {
+		if err := f.Truncate(0); err != nil {
+			return nil, fmt.Errorf("downloader: reset temp file: %w", err)
+		}
+	}
 
 	stopProgress := startProgressReporter(st, size, req.OnProgress)
 
@@ -332,6 +340,16 @@ func (e *Engine) Download(ctx context.Context, req Request) (*Result, error) {
 		return nil, waitErr
 	}
 
+	// The finished file is exactly as long as the remote file (or, with an
+	// unknown size, as what was received) — never longer, whatever the
+	// .part held before.
+	finalSize := st.Size
+	if finalSize <= 0 {
+		finalSize = st.totalDownloaded()
+	}
+	if err := f.Truncate(finalSize); err != nil {
+		return nil, fmt.Errorf("downloader: set final file size: %w", err)
+	}
 	if err := f.Sync(); err != nil {
 		return nil, fmt.Errorf("downloader: sync temp file: %w", err)
 	}
