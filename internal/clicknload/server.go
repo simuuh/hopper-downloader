@@ -4,10 +4,11 @@
 // /flash/ and /jdcheck.js probes those buttons use to detect that a
 // compatible download tool is running locally.
 //
-// This listener is security-sensitive by design: any origin that can
-// reach it can queue downloads. It is bound to 127.0.0.1 by default and
-// only accepts requests from Config.TrustedNets (see internal/config's
-// clicknload.trusted_cidrs).
+// This listener is security-sensitive by design: any web page the user's
+// browser opens can reach it and queue links. It is bound to 127.0.0.1 by
+// default and only accepts requests from Config.TrustedNets (see
+// internal/config's clicknload.trusted_cidrs), and everything it queues
+// starts paused, so a download never begins without the user starting it.
 package clicknload
 
 import (
@@ -37,16 +38,6 @@ type Sink interface {
 	AddLinks(links []queue.LinkInput, name string, opts queue.AddOptions) (*queue.AddResult, error)
 }
 
-// AutoStartSource reports whether items added here should start
-// immediately (queued) rather than paused — see
-// config.Downloads.AutoStartImports / PATCH /api/v1/settings. A narrow,
-// single-method interface (rather than depending on internal/settings
-// directly) for the same reason as Sink: unit-testable without a real
-// settings store.
-type AutoStartSource interface {
-	AutoStartImports() bool
-}
-
 // Config configures the Click'n'Load listener.
 type Config struct {
 	Host        string
@@ -57,16 +48,15 @@ type Config struct {
 // Server serves the Click'n'Load 2 protocol on its own listener, separate
 // from the main REST API/Web UI.
 type Server struct {
-	sink      Sink
-	autoStart AutoStartSource
-	cfg       Config
-	log       *slog.Logger
-	srv       *http.Server
+	sink Sink
+	cfg  Config
+	log  *slog.Logger
+	srv  *http.Server
 }
 
 // New builds a Server. Call ListenAndServe to start it.
-func New(sink Sink, autoStart AutoStartSource, cfg Config, log *slog.Logger) *Server {
-	return &Server{sink: sink, autoStart: autoStart, cfg: cfg, log: log}
+func New(sink Sink, cfg Config, log *slog.Logger) *Server {
+	return &Server{sink: sink, cfg: cfg, log: log}
 }
 
 // Handler builds the HTTP handler, wrapped in the CORS and trusted-CIDR
@@ -92,11 +82,13 @@ func (s *Server) Handler() http.Handler {
 // enforcement is concerned regardless of how this listener is bound.
 //
 // Wildcarding the *response-readability* grant here doesn't broaden who
-// can successfully queue a link: that's still gated by trustMiddleware,
-// unconditionally, for every real GET/POST — this only affects whether
-// the calling page's own JS can read the plain "success"/error text
-// back afterward, which is what the CnL protocol's button script
-// actually needs to do to report status to the user. An OPTIONS
+// can successfully queue a link: a form POST is a CORS simple request
+// that reaches the handler without any preflight anyway, which is why
+// addLinks always queues paused; the trust check still gates every real
+// GET/POST by client IP. The header only affects whether the calling
+// page's own JS can read the plain "success"/error text back afterward,
+// which is what the CnL protocol's button script actually needs to do
+// to report status to the user. An OPTIONS
 // preflight is let through unconditionally (ahead of the trust check)
 // because it carries no request body/CnL payload and triggers no queue
 // action by itself — only the real POST that follows it does, and that
@@ -269,7 +261,12 @@ func (s *Server) addLinks(w http.ResponseWriter, urls, passwords []string, sourc
 	if len(passwords) > 0 {
 		password = passwords[0]
 	}
-	opts := queue.AddOptions{Password: password, StartPaused: !s.autoStart.AutoStartImports()}
+	// Always paused, regardless of auto_start_imports and of the request's
+	// Origin: the trust check only sees the client IP, which for a local
+	// browser is trusted no matter which web page sent the request — any
+	// site can POST here without a CORS preflight. Starting a download
+	// needs an explicit action in the Web UI.
+	opts := queue.AddOptions{Password: password, StartPaused: true}
 
 	inputs := make([]queue.LinkInput, len(valid))
 	for i, u := range valid {

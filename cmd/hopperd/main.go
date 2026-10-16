@@ -48,14 +48,6 @@ import (
 // version is set via -ldflags "-X main.version=..." in release builds.
 var version = "dev"
 
-// autoStartFunc adapts a closure to clicknload.AutoStartSource, so the
-// Click'n'Load listener can read the live (bbolt-backed, possibly
-// changed since startup) auto_start_imports value on every request
-// without importing internal/settings itself.
-type autoStartFunc func() bool
-
-func (f autoStartFunc) AutoStartImports() bool { return f() }
-
 // settingsExtractAdapter adapts *settings.Manager to queue.ExtractSettings
 // via a func indirection (see run()'s comment on why: queueMgr needs this
 // before settingsMgr itself can be constructed).
@@ -337,7 +329,7 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("parse clicknload trusted CIDRs: %w", err)
 		}
-		cnlSrv = clicknload.New(queueMgr, autoStartFunc(func() bool { return settingsMgr.Get().AutoStartImports }), clicknload.Config{
+		cnlSrv = clicknload.New(queueMgr, clicknload.Config{
 			Host:        cfg.ClickNLoad.Host,
 			Port:        cfg.ClickNLoad.Port,
 			TrustedNets: trustedNets,

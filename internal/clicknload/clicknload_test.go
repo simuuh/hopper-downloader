@@ -43,20 +43,13 @@ func (f *fakeSink) AddLinks(links []queue.LinkInput, name string, opts queue.Add
 	return &queue.AddResult{Items: items}, nil
 }
 
-// fakeAutoStart always reports true, matching the pre-existing (pre-
-// auto_start_imports) test expectation that AddLink/AddPackage calls
-// aren't paused.
-type fakeAutoStart struct{}
-
-func (fakeAutoStart) AutoStartImports() bool { return true }
-
 func localhostOnlyConfig() Config {
 	_, cidr, _ := net.ParseCIDR("127.0.0.1/32")
 	return Config{Host: "127.0.0.1", Port: 0, TrustedNets: []*net.IPNet{cidr}}
 }
 
 func TestHandleCheck_ContainsJDownloaderAndHopper(t *testing.T) {
-	s := New(&fakeSink{}, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(&fakeSink{}, localhostOnlyConfig(), discardLogger())
 	req := httptest.NewRequest(http.MethodGet, "/flash/", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
@@ -72,7 +65,7 @@ func TestHandleCheck_ContainsJDownloaderAndHopper(t *testing.T) {
 }
 
 func TestHandleCheckJS(t *testing.T) {
-	s := New(&fakeSink{}, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(&fakeSink{}, localhostOnlyConfig(), discardLogger())
 	req := httptest.NewRequest(http.MethodGet, "/jdcheck.js", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
@@ -89,7 +82,7 @@ func TestHandleCheckJS(t *testing.T) {
 // net.IPNet.Contains on an IPv4 CIDR (the common trusted_cidrs case)
 // doesn't match that form unless it's unwrapped first via To4.
 func TestTrustedClient_IPv4MappedIPv6Accepted(t *testing.T) {
-	s := New(&fakeSink{}, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(&fakeSink{}, localhostOnlyConfig(), discardLogger())
 	req := httptest.NewRequest(http.MethodGet, "/flash/", nil)
 	req.RemoteAddr = "[::ffff:127.0.0.1]:54321"
 	w := httptest.NewRecorder()
@@ -101,7 +94,7 @@ func TestTrustedClient_IPv4MappedIPv6Accepted(t *testing.T) {
 }
 
 func TestUntrustedClient_Rejected(t *testing.T) {
-	s := New(&fakeSink{}, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(&fakeSink{}, localhostOnlyConfig(), discardLogger())
 	req := httptest.NewRequest(http.MethodGet, "/flash/", nil)
 	req.RemoteAddr = "203.0.113.5:54321" // not in 127.0.0.1/32
 	w := httptest.NewRecorder()
@@ -132,7 +125,7 @@ func checkCORSHeaders(t *testing.T, h http.Header) {
 // this listener at all, not what a browser is willing to let the
 // calling page's JS read back from the response.
 func TestCORSHeaders_OnTrustedResponse(t *testing.T) {
-	s := New(&fakeSink{}, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(&fakeSink{}, localhostOnlyConfig(), discardLogger())
 	req := httptest.NewRequest(http.MethodGet, "/flash/", nil)
 	req.RemoteAddr = "127.0.0.1:54321"
 	w := httptest.NewRecorder()
@@ -149,7 +142,7 @@ func TestCORSHeaders_OnTrustedResponse(t *testing.T) {
 // own 403, since corsMiddleware wraps outside it, not the other way
 // around.
 func TestCORSHeaders_OnUntrustedRejection(t *testing.T) {
-	s := New(&fakeSink{}, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(&fakeSink{}, localhostOnlyConfig(), discardLogger())
 	req := httptest.NewRequest(http.MethodGet, "/flash/", nil)
 	req.RemoteAddr = "203.0.113.5:54321"
 	w := httptest.NewRecorder()
@@ -169,7 +162,7 @@ func TestCORSHeaders_OnUntrustedRejection(t *testing.T) {
 // follows a successful preflight is still fully gated by
 // trustMiddleware, unconditionally).
 func TestCORSHeaders_OPTIONSBypassesTrustCheck(t *testing.T) {
-	s := New(&fakeSink{}, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(&fakeSink{}, localhostOnlyConfig(), discardLogger())
 	req := httptest.NewRequest(http.MethodOptions, "/flash/add", nil)
 	req.RemoteAddr = "203.0.113.5:54321" // not in 127.0.0.1/32
 	w := httptest.NewRecorder()
@@ -186,7 +179,7 @@ func TestCORSHeaders_OPTIONSBypassesTrustCheck(t *testing.T) {
 
 func TestHandleAdd_PlainSingleURL(t *testing.T) {
 	sink := &fakeSink{}
-	s := New(sink, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(sink, localhostOnlyConfig(), discardLogger())
 
 	form := url.Values{"urls": {"http://example.com/file1"}, "passwords": {"secret"}}
 	req := httptest.NewRequest(http.MethodPost, "/flash/add", strings.NewReader(form.Encode()))
@@ -214,7 +207,7 @@ func TestHandleAdd_PlainSingleURL(t *testing.T) {
 // queue normally.
 func TestHandleAdd_SkipsInvalidURLsButQueuesTheRest(t *testing.T) {
 	sink := &fakeSink{}
-	s := New(sink, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(sink, localhostOnlyConfig(), discardLogger())
 
 	urls := strings.Join([]string{
 		"http://example.com/file1",
@@ -253,7 +246,7 @@ func TestHandleAdd_SkipsInvalidURLsButQueuesTheRest(t *testing.T) {
 // deeper inside queue.Manager.
 func TestHandleAdd_AllURLsInvalid_Rejected(t *testing.T) {
 	sink := &fakeSink{}
-	s := New(sink, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(sink, localhostOnlyConfig(), discardLogger())
 
 	form := url.Values{"urls": {"not-a-url\r\nftp://also-not-supported"}}
 	req := httptest.NewRequest(http.MethodPost, "/flash/add", strings.NewReader(form.Encode()))
@@ -272,7 +265,7 @@ func TestHandleAdd_AllURLsInvalid_Rejected(t *testing.T) {
 
 func TestHandleAdd_PlainMultiURL_CreatesPackage(t *testing.T) {
 	sink := &fakeSink{}
-	s := New(sink, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(sink, localhostOnlyConfig(), discardLogger())
 
 	urls := "http://example.com/file1\r\nhttp://example.com/file2"
 	form := url.Values{"urls": {urls}, "source": {"http://referrer.example.com/page"}}
@@ -310,7 +303,7 @@ func encryptCNL2(t *testing.T, plaintext []byte, key []byte) string {
 
 func TestHandleAddCrypted2_DecryptsAndQueues(t *testing.T) {
 	sink := &fakeSink{}
-	s := New(sink, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(sink, localhostOnlyConfig(), discardLogger())
 
 	key := []byte("0123456789abcdef") // 16 bytes
 	hexKey := hex.EncodeToString(key)
@@ -339,7 +332,7 @@ func TestHandleAddCrypted2_DecryptsAndQueues(t *testing.T) {
 
 func TestHandleAddCrypted2_BadKey_Rejected(t *testing.T) {
 	sink := &fakeSink{}
-	s := New(sink, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(sink, localhostOnlyConfig(), discardLogger())
 
 	form := url.Values{
 		"jk":      {"function f(){ return 'not-hex!!'; }"},
@@ -367,7 +360,7 @@ func TestHandleAddCrypted2_BadKey_Rejected(t *testing.T) {
 // pattern across the URLs should all reduce to the same base name.
 func TestHandleAdd_GenericSource_DerivesNameFromFilenames(t *testing.T) {
 	sink := &fakeSink{}
-	s := New(sink, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(sink, localhostOnlyConfig(), discardLogger())
 
 	urls := strings.Join([]string{
 		"https://rapidgator.net/file/abc/movie.part1.rar.html",

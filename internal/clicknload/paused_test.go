@@ -108,7 +108,7 @@ func postCNL(t *testing.T, h http.Handler, path string, form url.Values, hdr map
 // download by itself — even with auto_start_imports on.
 func TestHandleAdd_ForeignOrigin_QueuedPausedNoDownload(t *testing.T) {
 	q := newRealQueue(t)
-	s := New(q.mgr, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(q.mgr, localhostOnlyConfig(), discardLogger())
 
 	w := postCNL(t, s.Handler(), "/flash/add",
 		url.Values{"urls": {q.baseURL + "/file.bin"}},
@@ -121,7 +121,7 @@ func TestHandleAdd_ForeignOrigin_QueuedPausedNoDownload(t *testing.T) {
 
 func TestHandleAdd_NoOrigin_AutoStartOn_QueuedPausedNoDownload(t *testing.T) {
 	q := newRealQueue(t)
-	s := New(q.mgr, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(q.mgr, localhostOnlyConfig(), discardLogger())
 
 	w := postCNL(t, s.Handler(), "/flash/add",
 		url.Values{"urls": {q.baseURL + "/a.bin\r\n" + q.baseURL + "/b.bin"}}, nil)
@@ -133,7 +133,7 @@ func TestHandleAdd_NoOrigin_AutoStartOn_QueuedPausedNoDownload(t *testing.T) {
 
 func TestHandleAddCrypted2_QueuedPausedNoDownload(t *testing.T) {
 	q := newRealQueue(t)
-	s := New(q.mgr, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+	s := New(q.mgr, localhostOnlyConfig(), discardLogger())
 
 	key := []byte("0123456789abcdef")
 	crypted := encryptCNL2(t, []byte(q.baseURL+"/a.bin\r\n"+q.baseURL+"/b.bin"), key)
@@ -160,7 +160,7 @@ func TestTrust_ZonedIPv6_RejectedWithoutPanic(t *testing.T) {
 	for _, addr := range []string{"[::1%lo0]:40000", "[fe80::1%eth0]:40000", "[fe80::1%25eth0]:40000", "::1%lo"} {
 		t.Run(addr, func(t *testing.T) {
 			sink := &fakeSink{}
-			s := New(sink, fakeAutoStart{}, cfg, discardLogger())
+			s := New(sink, cfg, discardLogger())
 			form := url.Values{"urls": {"http://example.com/file.bin"}}
 			req := httptest.NewRequest(http.MethodPost, "/flash/add", strings.NewReader(form.Encode()))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -191,7 +191,7 @@ func TestHandleAddCrypted2_MalformedCrypted_RejectedWithoutPanic(t *testing.T) {
 	for name, crypted := range cases {
 		t.Run(name, func(t *testing.T) {
 			sink := &fakeSink{}
-			s := New(sink, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+			s := New(sink, localhostOnlyConfig(), discardLogger())
 			w := postCNL(t, s.Handler(), "/flash/addcrypted2", url.Values{"jk": {jk}, "crypted": {crypted}}, nil)
 			if w.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want 400", w.Code)
@@ -216,7 +216,7 @@ func TestHandleAddCrypted2_OversizedJK_RejectedWithoutPanic(t *testing.T) {
 	for name, jk := range cases {
 		t.Run(name, func(t *testing.T) {
 			sink := &fakeSink{}
-			s := New(sink, fakeAutoStart{}, localhostOnlyConfig(), discardLogger())
+			s := New(sink, localhostOnlyConfig(), discardLogger())
 			w := postCNL(t, s.Handler(), "/flash/addcrypted2", url.Values{"jk": {jk}, "crypted": {crypted}}, nil)
 			if w.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want 400", w.Code)
