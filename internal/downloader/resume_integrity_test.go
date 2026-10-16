@@ -45,7 +45,16 @@ type origin struct {
 	fullGets  atomic.Int32 // GETs answered 200 with the whole file
 	rangeGets atomic.Int32 // GETs answered 206
 
+	startsMu sync.Mutex
+	starts   []int // first byte of every ranged GET
+
 	srv *httptest.Server
+}
+
+func (o *origin) rangeStarts() []int {
+	o.startsMu.Lock()
+	defer o.startsMu.Unlock()
+	return append([]int(nil), o.starts...)
 }
 
 func newOrigin(t *testing.T, payload []byte, ranges bool, delay time.Duration) *origin {
@@ -119,6 +128,9 @@ func (o *origin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	o.gets.Add(1)
 	if ranged {
 		o.rangeGets.Add(1)
+		o.startsMu.Lock()
+		o.starts = append(o.starts, start)
+		o.startsMu.Unlock()
 	} else {
 		o.fullGets.Add(1)
 	}
@@ -249,4 +261,81 @@ func TestDownload_PauseResume_Resumable_BitExact(t *testing.T) {
 		t.Errorf("resume transferred %d bytes, want fewer than the whole file (%d)", sent, len(payload))
 	}
 	assertFileEquals(t, res.Path, payload)
+}
+
+// --- H5: a 416 is missing data, never "chunk complete" ---
+
+// Every range not starting at byte 0 is answered 416, as a server does
+// once the file behind the URL shrank or the link stopped serving it.
+func TestDownload_416IsAnErrorNotCompletion_H5(t *testing.T) {
+	payload := randomPayload(16<<20, 4)
+	var gets atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Accept-Ranges", "bytes")
+		rh := r.Header.Get("Range")
+		if r.Method == http.MethodHead || rh == "" {
+			w.Header().Set("Content-Length", fmt.Sprint(len(payload)))
+			if r.Method != http.MethodHead {
+				_, _ = w.Write(payload)
+			}
+			return
+		}
+		gets.Add(1)
+		var s, e int
+		_, _ = fmt.Sscanf(rh, "bytes=%d-%d", &s, &e)
+		if s > 0 {
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", s, e, len(payload)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(payload[s : e+1])
+	}))
+	t.Cleanup(srv.Close)
+	base := t.TempDir()
+
+	e := New(Config{BaseDir: base, RetryMax: 3, RetryBackoffBase: 20 * time.Millisecond})
+	res, err := e.Download(context.Background(), Request{URL: srv.URL, RelPath: "f.bin", ParallelChunks: 4})
+	if err == nil {
+		t.Fatalf("Download succeeded (%d bytes written), want an error for the 416 chunks", res.BytesWritten)
+	}
+	if _, statErr := os.Stat(filepath.Join(base, "f.bin")); statErr == nil {
+		t.Fatal("an incomplete file was finalized")
+	}
+	// 4 chunks, one request each: a 416 won't change on retry.
+	if n := gets.Load(); n > 4 {
+		t.Errorf("ranged GETs = %d, the 416 was retried", n)
+	}
+}
+
+// Normal case: a chunk that is already complete in the resume state is
+// skipped, not requested again, and the result is bit-exact.
+func TestDownload_ResumeSkipsCompletedChunk_BitExact(t *testing.T) {
+	payload := randomPayload(1<<20, 5)
+	o := newOrigin(t, payload, true, 0)
+	base := t.TempDir()
+	dest := filepath.Join(base, "f.bin")
+
+	st := newState(o.srv.URL, int64(len(payload)), true, 4, statePath(dest))
+	done := st.Chunks[1]
+	part := make([]byte, len(payload))
+	copy(part[done.Start:done.End+1], payload[done.Start:done.End+1])
+	st.Chunks[1].Downloaded = done.End - done.Start + 1
+	if err := os.WriteFile(tempPath(dest), part, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	res := resumeDownload(t, base, o.srv.URL, 4)
+	if !res.Resumed {
+		t.Error("Resumed = false, want the saved state to be used")
+	}
+	for _, s := range o.rangeStarts() {
+		if int64(s) >= done.Start && int64(s) <= done.End {
+			t.Errorf("completed chunk was requested again (range start %d)", s)
+		}
+	}
+	assertFileEquals(t, dest, payload)
 }
