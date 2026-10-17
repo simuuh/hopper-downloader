@@ -3,10 +3,12 @@ package queue
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -736,5 +738,86 @@ func TestRetryExtraction_ConcurrentRequestsStartOneExtraction(t *testing.T) {
 		if n != 1 || be.callCount() != 1 {
 			t.Fatalf("round %d: %d requests accepted, %d extractions run; want exactly 1 of each", i, n, be.callCount())
 		}
+	}
+}
+
+// logBuffer is a concurrency-safe io.Writer for capturing log output.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
+}
+
+// When a finished archive part does not lead to an extraction, the log
+// says why — otherwise "nothing happened" can't be told apart from a bug.
+func TestMaybeExtract_LogsWhyItDoesNotExtract(t *testing.T) {
+	type part struct {
+		name  string
+		state State
+	}
+	cases := []struct {
+		name    string
+		enabled bool
+		parts   []part // the first one is the part that just finished
+		want    string // "" = no info-level explanation expected
+	}{
+		{"auto-extract off", false, []part{{"archive.zip", StateDone}}, "auto-extract is off"},
+		{"part paused", true, []part{{"archive.part01.rar", StateDone}, {"archive.part02.rar", StatePaused}}, "won't finish on their own"},
+		{"part failed", true, []part{{"archive.part01.rar", StateDone}, {"archive.part02.rar", StateError}}, "won't finish on their own"},
+		{"first part missing", true, []part{{"archive.part02.rar", StateDone}}, "first part"},
+		{"other parts still downloading", true, []part{{"archive.part01.rar", StateDone}, {"archive.part02.rar", StateDownloading}}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &logBuffer{}
+			log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			fe := &fakeExtractor{}
+			fs := &fakeExtractSettings{enabled: tc.enabled}
+			eng := downloader.New(downloader.Config{BaseDir: t.TempDir()})
+			mgr, err := New(newTestStore(t), plugins.NewRegistry(directhttp.New()), eng, nil, nil, fe, fs, scheduler.New(), log, Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var finished *Item
+			for i, p := range tc.parts {
+				it := &Item{ID: newID(), PackageID: "pkg1", Filename: p.name}
+				injectDoneItem(t, mgr, it)
+				mgr.mu.Lock()
+				mgr.items[it.ID].State = p.state
+				mgr.mu.Unlock()
+				if i == 0 {
+					cp := *it
+					finished = &cp
+				}
+			}
+
+			mgr.maybeExtract(finished)
+
+			out := logs.String()
+			if tc.want == "" {
+				if strings.Contains(out, "extract") {
+					t.Errorf("unexpected info-level log while parts are still downloading:\n%s", out)
+				}
+				return
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("log does not explain why nothing was extracted (want %q):\n%s", tc.want, out)
+			}
+			if fe.callCount() != 0 {
+				t.Errorf("extractor called %d times, want 0", fe.callCount())
+			}
+		})
 	}
 }
