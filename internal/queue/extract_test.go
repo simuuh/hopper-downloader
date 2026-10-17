@@ -482,12 +482,12 @@ func TestRetryExtraction_NotDoneRejected(t *testing.T) {
 	}
 }
 
-func TestRetryExtraction_NotExtractFailedRejected(t *testing.T) {
+func TestRetryExtraction_AlreadyExtractedRejected(t *testing.T) {
 	fe := &fakeExtractor{}
 	fs := &fakeExtractSettings{enabled: true}
 	mgr, _ := newExtractTestManager(t, fe, fs, 1)
 
-	it := &Item{ID: newID(), Filename: "archive.zip"} // ExtractState is the zero value ""
+	it := &Item{ID: newID(), Filename: "archive.zip", ExtractState: ExtractStateExtracted}
 	injectDoneItem(t, mgr, it)
 
 	if err := mgr.RetryExtraction(it.ID, ""); !errors.Is(err, ErrExtractNotRetryable) {
@@ -613,5 +613,70 @@ func TestRetryExtraction_MultiPartUsesFirstPartAndPackagePassword(t *testing.T) 
 	}
 	if call.pkgPassword != "pkgpass" {
 		t.Errorf("pkgPassword = %q, want pkgpass", call.pkgPassword)
+	}
+}
+
+// A finished archive that was never extracted (auto-extract was off when
+// it completed) can be extracted on request, even with auto-extract
+// still off.
+func TestRetryExtraction_NeverExtractedArchiveIsExtracted(t *testing.T) {
+	fe := &fakeExtractor{}
+	fs := &fakeExtractSettings{enabled: false}
+	mgr, baseDir := newExtractTestManager(t, fe, fs, 1)
+
+	if err := os.WriteFile(filepath.Join(baseDir, "archive.zip"), []byte("zip content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	it := &Item{ID: newID(), Filename: "archive.zip"} // ExtractState "": never attempted
+	injectDoneItem(t, mgr, it)
+
+	if err := mgr.RetryExtraction(it.ID, ""); err != nil {
+		t.Fatalf("RetryExtraction: %v", err)
+	}
+	waitForExtractState(t, mgr, it.ID)
+	if fe.callCount() != 1 {
+		t.Errorf("extractor called %d times, want 1", fe.callCount())
+	}
+}
+
+// Extracting a multi-part set whose other parts haven't finished would
+// only fail on the missing volumes: refuse it up front.
+func TestRetryExtraction_PartsStillPendingRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state ExtractState
+	}{{"never extracted", ""}, {"failed before", ExtractStateExtractFailed}} {
+		t.Run(tc.name, func(t *testing.T) {
+			fe := &fakeExtractor{}
+			fs := &fakeExtractSettings{enabled: true}
+			mgr, baseDir := newExtractTestManager(t, fe, fs, 1)
+
+			pkg := &Package{ID: "pkg1", Name: "Archive", CreatedAt: time.Now()}
+			mgr.mu.Lock()
+			mgr.packages[pkg.ID] = pkg
+			mgr.mu.Unlock()
+			pkgDir := filepath.Join(baseDir, "Archive")
+			if err := os.MkdirAll(pkgDir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(pkgDir, "archive.part01.rar"), []byte("data"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			part1 := &Item{ID: newID(), PackageID: pkg.ID, Filename: "archive.part01.rar", ExtractState: tc.state}
+			injectDoneItem(t, mgr, part1)
+			part2 := &Item{ID: newID(), PackageID: pkg.ID, Filename: "archive.part02.rar"}
+			injectDoneItem(t, mgr, part2)
+			mgr.mu.Lock()
+			mgr.items[part2.ID].State = StatePaused // added paused, never started
+			mgr.mu.Unlock()
+
+			if err := mgr.RetryExtraction(part1.ID, ""); err == nil {
+				t.Fatal("RetryExtraction accepted a set with a part still paused")
+			}
+			time.Sleep(50 * time.Millisecond)
+			if fe.callCount() != 0 {
+				t.Errorf("extractor called %d times, want 0", fe.callCount())
+			}
+		})
 	}
 }
