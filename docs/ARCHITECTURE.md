@@ -292,10 +292,20 @@ checks whether all items of the item's archive group in the same
 package are done, deduplicated per group (`extractTriggered`). Before
 starting it waits until every part is visible on disk
 (`extract.part_wait_attempts`/`part_wait_interval`, for slow NAS
-mounts). The outcome is set on every item of the group. Extractions
-interrupted by a restart become `extract_failed` and can be retried
-with a one-off password (`POST /queue/{id}/extract`), which is never
-persisted.
+mounts). The outcome is set on every item of the group. When it does
+*not* extract, it logs why: auto-extract off, parts paused or failed
+(they won't finish on their own), or the first part missing from the
+package; parts merely still downloading are logged at debug level.
+Extractions interrupted by a restart become `extract_failed`.
+
+`POST /queue/{id}/extract` (`RetryExtraction`) extracts on request: a
+finished archive that was never extracted (auto-extract was off when it
+finished — enabling it later doesn't revisit finished items) or one
+whose extraction failed, optionally with a one-off password that is
+never persisted. Every part of the set must be done (`409` otherwise),
+and the request claims the group in `extractTriggered` like the
+automatic path, so a double click or a request during a running
+extraction gets `409` instead of a second `unrar` on the same files.
 
 ## Click'n'Load
 
