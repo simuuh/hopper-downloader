@@ -193,6 +193,8 @@ func writeRetryExtractError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "item is not a finished archive that is unextracted or failed to extract")
 	case errors.Is(err, queue.ErrArchiveIncomplete):
 		writeError(w, http.StatusConflict, "not every part of the archive is downloaded yet")
+	case errors.Is(err, queue.ErrExtractInProgress):
+		writeError(w, http.StatusConflict, "archive is already being extracted")
 	case errors.Is(err, queue.ErrArchiveMissing):
 		writeError(w, http.StatusBadRequest, "archive file not found on disk")
 	default:

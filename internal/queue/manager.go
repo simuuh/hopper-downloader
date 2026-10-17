@@ -1397,9 +1397,8 @@ func (m *Manager) allPartsOnDisk(siblings []*Item) (bool, error) {
 func (m *Manager) runExtraction(firstPart *Item, siblings []*Item, group, pkgPassword, extraPassword string) {
 	start := time.Now()
 
-	// Clears maybeExtract's dedup entry for this group regardless of how
-	// this call ends (including RetryExtraction's manual path, which
-	// never set one — deleting a missing key is a no-op): without this,
+	// Releases the group's claim (set by maybeExtract or RetryExtraction)
+	// regardless of how this call ends: without this,
 	// deleting every item in an archive group and re-adding the same
 	// archive later would never trigger extraction again, since
 	// extractTriggered has no other eviction path.
@@ -1581,6 +1580,11 @@ var ErrExtractNotRetryable = errors.New("queue: item is not a finished archive t
 // extraction would only fail on the missing volume.
 var ErrArchiveIncomplete = errors.New("queue: not every part of the archive is downloaded yet")
 
+// ErrExtractInProgress is returned by RetryExtraction when the item's
+// archive is already being extracted (another request, or the automatic
+// extraction after the last part finished).
+var ErrExtractInProgress = errors.New("queue: archive is already being extracted")
+
 // ErrArchiveMissing is returned by RetryExtraction when the item's
 // archive (or, for a multi-part set, its first part) can no longer be
 // found on disk — e.g. deleted manually, or by a prior successful
@@ -1620,6 +1624,7 @@ func (m *Manager) RetryExtraction(id, extraPassword string) error {
 		return ErrExtractNotRetryable
 	}
 	group := extract.GroupBase(it.Filename)
+	pkgID := it.PackageID
 
 	var firstPart *Item
 	var siblings []*Item
@@ -1671,7 +1676,33 @@ func (m *Manager) RetryExtraction(id, extraPassword string) error {
 		pkgPassword = pkg.Password
 	}
 
-	m.setExtractState(it.PackageID, group, "", "")
+	// Claim the group the same way maybeExtract does (runExtraction
+	// releases it), so concurrent requests — or a request while the
+	// automatic extraction runs — start one extraction, not two writing
+	// into the same directory. The state is checked again once claimed: a
+	// request that read it before another extraction finished must not
+	// extract the archive a second time.
+	triggerKey := pkgID + "|" + group
+	m.extractTriggeredMu.Lock()
+	if m.extractTriggered[triggerKey] {
+		m.extractTriggeredMu.Unlock()
+		return ErrExtractInProgress
+	}
+	m.extractTriggered[triggerKey] = true
+	m.extractTriggeredMu.Unlock()
+
+	m.mu.RLock()
+	cur, ok := m.items[id]
+	stillPending := ok && (cur.ExtractState == "" || cur.ExtractState == ExtractStateExtractFailed)
+	m.mu.RUnlock()
+	if !stillPending {
+		m.extractTriggeredMu.Lock()
+		delete(m.extractTriggered, triggerKey)
+		m.extractTriggeredMu.Unlock()
+		return ErrExtractNotRetryable
+	}
+
+	m.setExtractState(pkgID, group, "", "")
 	go m.runExtraction(firstPart, siblings, group, pkgPassword, extraPassword)
 	return nil
 }
