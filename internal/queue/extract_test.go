@@ -680,3 +680,61 @@ func TestRetryExtraction_PartsStillPendingRejected(t *testing.T) {
 		})
 	}
 }
+
+// blockingExtractor holds every extraction until release is closed, so a
+// test can act while one is still running.
+type blockingExtractor struct {
+	fakeExtractor
+	release chan struct{}
+}
+
+func (b *blockingExtractor) Extract(ctx context.Context, srcPath, destDir, pkgPassword string, userPasswords []string) (*extract.Result, error) {
+	<-b.release
+	return b.fakeExtractor.Extract(ctx, srcPath, destDir, pkgPassword, userPasswords)
+}
+
+// Two extraction requests for the same archive at once (a double click,
+// two browser tabs) must start one extraction, not two unrar processes
+// writing into the same directory.
+func TestRetryExtraction_ConcurrentRequestsStartOneExtraction(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		be := &blockingExtractor{release: make(chan struct{})}
+		fs := &fakeExtractSettings{enabled: true}
+		baseDir := t.TempDir()
+		eng := downloader.New(downloader.Config{BaseDir: baseDir, RetryMax: 1, RetryBackoffBase: 5 * time.Millisecond})
+		mgr, err := New(newTestStore(t), plugins.NewRegistry(directhttp.New()), eng, nil, nil, be, fs, scheduler.New(), discardLogger(), Config{ParallelFiles: 1, PollInterval: 15 * time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(baseDir, "archive.zip"), []byte("zip content"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		it := &Item{ID: newID(), Filename: "archive.zip", ExtractState: ExtractStateExtractFailed}
+		injectDoneItem(t, mgr, it)
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var accepted sync.Map
+		for k := 0; k < 2; k++ {
+			wg.Add(1)
+			go func(k int) {
+				defer wg.Done()
+				<-start
+				if mgr.RetryExtraction(it.ID, "") == nil {
+					accepted.Store(k, true)
+				}
+			}(k)
+		}
+		close(start)
+		wg.Wait()
+		close(be.release)
+		waitForExtractState(t, mgr, it.ID)
+		time.Sleep(20 * time.Millisecond)
+
+		n := 0
+		accepted.Range(func(_, _ any) bool { n++; return true })
+		if n != 1 || be.callCount() != 1 {
+			t.Fatalf("round %d: %d requests accepted, %d extractions run; want exactly 1 of each", i, n, be.callCount())
+		}
+	}
+}
