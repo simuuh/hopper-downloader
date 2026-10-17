@@ -43,9 +43,12 @@ downloads:
   bandwidth_limit: 0 # bytes/s, 0 = unlimited
   retry_max: 5
   retry_backoff_base: 2s
-  # Start links from Click'n'Load and .dlc/.txt imports right away.
+  # Start links from .dlc/.txt imports right away.
   # false = add them paused for review first (Web UI: "Start"). Can be
   # changed live in Settings; once changed there, the saved value wins.
+  # Click'n'Load links are always added paused, whatever this says: any
+  # web page can submit to the Click'n'Load listener, so you start them
+  # yourself in the Web UI.
   auto_start_imports: true # default true
 
 clicknload:

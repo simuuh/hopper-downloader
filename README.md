@@ -31,7 +31,9 @@ DLC like JDownloader, but is built to run headless from the start:
 
 ## Features
 
-- Click'n'Load 2 (filecrypt.cc, hide.cx, …) and `.dlc` / `.txt` import
+- Click'n'Load 2 (filecrypt.cc, hide.cx, …) and `.dlc` / `.txt` import;
+  Click'n'Load links always arrive paused and start only when you start
+  them in the Web UI
 - Links grouped into one package per release; later parts merge in,
   duplicates and mirrors are skipped
 - Parallel, chunked, resumable downloads with automatic retries and

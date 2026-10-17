@@ -76,11 +76,14 @@ type DownloadsConfig struct {
 	BandwidthLimit   int64         `yaml:"bandwidth_limit"` // bytes/s, 0 = unlimited
 	RetryMax         int           `yaml:"retry_max"`
 	RetryBackoffBase time.Duration `yaml:"retry_backoff_base"`
-	// AutoStartImports controls the initial state of items added via DLC
-	// import or Click'n'Load: true (the default) queues them to start
-	// right away; false adds them paused for review first (the Web UI then
-	// offers "Start"). Runtime-editable in Settings. Links added directly via POST /api/v1/links are unaffected —
-	// this only gates the two "many links at once, unattended" paths.
+	// AutoStartImports controls the initial state of items added via the
+	// .dlc/.txt import (POST /api/v1/import, also used by the browser
+	// extension and hopperctl watch): true (the default) queues them to
+	// start right away; false adds them paused for review first (the Web
+	// UI then offers "Start"). Runtime-editable in Settings. Links added
+	// directly via POST /api/v1/links are unaffected. Click'n'Load ignores
+	// this setting: any web page can submit to that listener, so its links
+	// are always added paused and started by the user in the Web UI.
 	AutoStartImports bool `yaml:"auto_start_imports"`
 }
 

@@ -314,7 +314,14 @@ persisted.
   answered before the trust check — button scripts on HTTPS pages call
   the listener cross-origin; whether a request may *queue* anything is
   decided only by `clicknload.trusted_cidrs` (IPv4-mapped IPv6 is
-  unwrapped first).
+  unwrapped first; an unparseable address, e.g. with an IPv6 zone, is
+  rejected).
+- Everything queued here starts **paused**, regardless of
+  `auto_start_imports` and of the `Origin` header — deliberately no
+  allowlist. The trust check only sees the client IP, and for a local
+  browser that is trusted whichever page sent the request (a form POST
+  needs no CORS preflight), so any website could otherwise start
+  downloads. The user starts the items in the Web UI.
 - Package naming: the `package` field, else the release name from the
   file names; a referring site's hostname never names a release.
 
@@ -465,7 +472,8 @@ are set).
 - Every `/api/v1` route except login/version requires a JWT.
 - An authenticated caller may queue any URL, including internal hosts —
   deliberate (homelab targets), the same trust boundary as curl.
-- Click'n'Load is loopback-only by default (`trusted_cidrs`).
+- Click'n'Load is loopback-only by default (`trusted_cidrs`) and never
+  starts a download by itself: its links are always queued paused.
 - Secrets in URLs (Rapidgator's token query parameter) are redacted from
   transport errors before they reach logs or the UI.
 - Strict CORS for the API, CSP and security headers on every response,
