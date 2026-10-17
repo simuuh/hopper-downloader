@@ -1287,10 +1287,16 @@ func (m *Manager) complete(id string, res *downloader.Result) {
 // happens to finish *last* is whichever one actually observes the group
 // as complete.
 func (m *Manager) maybeExtract(it *Item) {
-	if m.extractor == nil || m.extractSettings == nil || !m.extractSettings.ExtractEnabled() {
+	if m.extractor == nil || m.extractSettings == nil {
 		return
 	}
 	if it.Filename == "" || !extract.IsArchive(it.Filename) {
+		return
+	}
+	// Every reason not to extract is logged: otherwise a finished archive
+	// that stays packed can't be told apart from a bug.
+	if !m.extractSettings.ExtractEnabled() {
+		m.log.Info("queue: auto-extract is off, archive not extracted", "item_id", it.ID, "archive", it.Filename)
 		return
 	}
 	group := extract.GroupBase(it.Filename)
@@ -1298,7 +1304,7 @@ func (m *Manager) maybeExtract(it *Item) {
 	m.mu.RLock()
 	var firstPart *Item
 	var siblings []*Item
-	allDone := true
+	pending, stuck := 0, 0
 	for _, sib := range m.items {
 		if sib.PackageID != it.PackageID || sib.Filename == "" {
 			continue
@@ -1307,7 +1313,12 @@ func (m *Manager) maybeExtract(it *Item) {
 			continue
 		}
 		if sib.State != StateDone {
-			allDone = false
+			pending++
+			// Paused or failed parts never finish without the user,
+			// unlike queued or downloading ones.
+			if sib.State == StatePaused || sib.State == StateError {
+				stuck++
+			}
 		}
 		cp := *sib
 		siblings = append(siblings, &cp)
@@ -1319,7 +1330,17 @@ func (m *Manager) maybeExtract(it *Item) {
 	pkg := m.packages[it.PackageID]
 	m.mu.RUnlock()
 
-	if !allDone || firstPart == nil {
+	switch {
+	case stuck > 0:
+		m.log.Info("queue: extract waits for parts that won't finish on their own (paused or failed); start or retry them",
+			"item_id", it.ID, "archive", group, "waiting_for", stuck, "pending", pending)
+		return
+	case pending > 0:
+		m.log.Debug("queue: extract waits for remaining parts", "item_id", it.ID, "archive", group, "pending", pending)
+		return
+	case firstPart == nil:
+		m.log.Warn("queue: extract: first part of the archive is not in this package, nothing extracted",
+			"item_id", it.ID, "archive", group)
 		return
 	}
 
