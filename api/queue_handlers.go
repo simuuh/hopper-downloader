@@ -164,8 +164,9 @@ type retryExtractRequest struct {
 	Password string `json:"password"`
 }
 
-// handleRetryExtract implements POST /api/v1/queue/{id}/extract: re-runs
-// extraction for an item currently stuck in ExtractStateExtractFailed.
+// handleRetryExtract implements POST /api/v1/queue/{id}/extract: extracts
+// a finished archive that was never extracted (auto-extract was off) or
+// whose extraction failed.
 // An empty request body is valid (io.EOF from decodeJSON is treated the
 // same as an absent "password" field, not a malformed request) since
 // Password is the request's only field and entirely optional.
@@ -189,7 +190,9 @@ func writeRetryExtractError(w http.ResponseWriter, err error) {
 	case errors.Is(err, queue.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, queue.ErrExtractNotRetryable):
-		writeError(w, http.StatusBadRequest, "item is not done or does not have a failed extraction")
+		writeError(w, http.StatusBadRequest, "item is not a finished archive that is unextracted or failed to extract")
+	case errors.Is(err, queue.ErrArchiveIncomplete):
+		writeError(w, http.StatusConflict, "not every part of the archive is downloaded yet")
 	case errors.Is(err, queue.ErrArchiveMissing):
 		writeError(w, http.StatusBadRequest, "archive file not found on disk")
 	default:

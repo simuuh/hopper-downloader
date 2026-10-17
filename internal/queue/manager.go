@@ -1570,11 +1570,16 @@ func (m *Manager) deleteArchiveParts(packageID, group string) {
 }
 
 // ErrExtractNotRetryable is returned by RetryExtraction when the item
-// isn't in the one state re-extraction is defined for: StateDone with
-// ExtractStateExtractFailed. Anything else (still downloading, never
-// attempted extraction, already extracted) has no well-defined "retry"
-// semantics.
-var ErrExtractNotRetryable = errors.New("queue: item is not done or does not have a failed extraction")
+// isn't a finished archive waiting for extraction: it must be StateDone
+// and either never extracted (auto-extract was off when it finished) or
+// with a failed extraction. One still downloading, being extracted or
+// already extracted is rejected.
+var ErrExtractNotRetryable = errors.New("queue: item is not a finished archive that is unextracted or failed to extract")
+
+// ErrArchiveIncomplete is returned by RetryExtraction when another part
+// of the item's multi-part archive isn't done yet (e.g. still paused):
+// extraction would only fail on the missing volume.
+var ErrArchiveIncomplete = errors.New("queue: not every part of the archive is downloaded yet")
 
 // ErrArchiveMissing is returned by RetryExtraction when the item's
 // archive (or, for a multi-part set, its first part) can no longer be
@@ -1583,10 +1588,12 @@ var ErrExtractNotRetryable = errors.New("queue: item is not done or does not hav
 // extract_failed record.
 var ErrArchiveMissing = errors.New("queue: archive file not found on disk")
 
-// RetryExtraction re-runs extraction for id, which must be StateDone
-// with ExtractState ExtractStateExtractFailed (ErrExtractNotRetryable
-// otherwise) and still have its archive's first part present on disk
-// (ErrArchiveMissing otherwise). extraPassword, if non-empty, is tried
+// RetryExtraction extracts id's archive on request: id must be StateDone
+// and either never extracted (auto-extract was off when it finished) or
+// with a failed extraction (ErrExtractNotRetryable otherwise), every part
+// of its archive set must be done (ErrArchiveIncomplete otherwise), and
+// its first part must still be on disk (ErrArchiveMissing otherwise).
+// It works whether auto-extract is on or not. extraPassword, if non-empty, is tried
 // ahead of the persisted extract_passwords list for this attempt only —
 // see runExtraction's doc comment; it is never written to settings.
 //
@@ -1604,7 +1611,7 @@ func (m *Manager) RetryExtraction(id, extraPassword string) error {
 		m.mu.RUnlock()
 		return ErrNotFound
 	}
-	if it.State != StateDone || it.ExtractState != ExtractStateExtractFailed {
+	if it.State != StateDone || (it.ExtractState != "" && it.ExtractState != ExtractStateExtractFailed) {
 		m.mu.RUnlock()
 		return ErrExtractNotRetryable
 	}
@@ -1616,12 +1623,16 @@ func (m *Manager) RetryExtraction(id, extraPassword string) error {
 
 	var firstPart *Item
 	var siblings []*Item
+	allDone := true
 	for _, sib := range m.items {
 		if sib.PackageID != it.PackageID || sib.Filename == "" {
 			continue
 		}
 		if !extract.IsArchive(sib.Filename) || extract.GroupBase(sib.Filename) != group {
 			continue
+		}
+		if sib.State != StateDone {
+			allDone = false
 		}
 		cp := *sib
 		siblings = append(siblings, &cp)
@@ -1633,6 +1644,9 @@ func (m *Manager) RetryExtraction(id, extraPassword string) error {
 	pkg := m.packages[it.PackageID]
 	m.mu.RUnlock()
 
+	if !allDone {
+		return ErrArchiveIncomplete
+	}
 	if firstPart == nil {
 		return ErrArchiveMissing
 	}
