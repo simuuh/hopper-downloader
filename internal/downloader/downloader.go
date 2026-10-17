@@ -226,7 +226,8 @@ func (e *Engine) SetGlobalBandwidthLimit(bytesPerSec int64) {
 }
 
 // Download fetches req.URL to BaseDir/req.RelPath, resuming a previous
-// partial attempt if one is found. It blocks until the transfer completes,
+// partial attempt if one is found and the remote file is still the same
+// version (see loadOrCreateState). It blocks until the transfer completes,
 // fails permanently (after retryMax attempts per chunk), or ctx is
 // cancelled.
 func (e *Engine) Download(ctx context.Context, req Request) (*Result, error) {
@@ -265,10 +266,28 @@ func (e *Engine) Download(ctx context.Context, req Request) (*Result, error) {
 		}
 	}
 
-	size, supportsRange, probeErr := probe(ctx, e.client, req.URL)
+	res, err := e.transfer(ctx, req, dest)
+	if errors.Is(err, errRemoteChanged) {
+		// The file behind the URL was replaced mid-transfer: the bytes on
+		// disk belong to the old version. Start over once against the new
+		// one (the fresh start truncates the .part); a second change in a
+		// row is reported as an error.
+		if rmErr := os.Remove(statePath(dest)); rmErr != nil && !os.IsNotExist(rmErr) {
+			return nil, fmt.Errorf("downloader: discard outdated resume state: %w", rmErr)
+		}
+		res, err = e.transfer(ctx, req, dest)
+	}
+	return res, err
+}
+
+// transfer runs one probe-and-download pass of req into dest, resuming
+// from the saved state when it still matches the remote file.
+func (e *Engine) transfer(ctx context.Context, req Request, dest string) (*Result, error) {
+	remote, probeErr := probe(ctx, e.client, req.URL)
 	if probeErr != nil && req.ExpectedSize <= 0 {
 		return nil, fmt.Errorf("downloader: probe %s: %w", req.URL, probeErr)
 	}
+	size, supportsRange := remote.size, remote.ranges
 	// chunkSize is the length the chunk ranges (and therefore the
 	// "connection closed early" check in fetchChunkOnce) are built from.
 	// Only a size the HTTP probe itself reported is trusted for that; a
@@ -296,7 +315,7 @@ func (e *Engine) Download(ctx context.Context, req Request) (*Result, error) {
 		numChunks = 1
 	}
 
-	st, resumed := loadOrCreateState(dest, req.URL, chunkSize, resumable, numChunks)
+	st, resumed := loadOrCreateState(dest, req.URL, chunkSize, resumable, numChunks, remote.validator)
 	st.path = statePath(dest)
 
 	tmp := tempPath(dest)
@@ -306,6 +325,7 @@ func (e *Engine) Download(ctx context.Context, req Request) (*Result, error) {
 	if resumed {
 		if _, err := os.Stat(tmp); err != nil {
 			st, resumed = newState(req.URL, chunkSize, resumable, numChunks, statePath(dest)), false
+			st.Validator = remote.validator
 		}
 	}
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_RDWR, 0o600)
@@ -313,6 +333,14 @@ func (e *Engine) Download(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("downloader: open temp file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
+	// A fresh start may find a .part left over from another URL, size or
+	// an aborted attempt; its bytes beyond what this transfer writes would
+	// otherwise end up in the finished file.
+	if !resumed {
+		if err := f.Truncate(0); err != nil {
+			return nil, fmt.Errorf("downloader: reset temp file: %w", err)
+		}
+	}
 
 	stopProgress := startProgressReporter(st, size, req.OnProgress)
 
@@ -332,6 +360,23 @@ func (e *Engine) Download(ctx context.Context, req Request) (*Result, error) {
 		return nil, waitErr
 	}
 
+	// Last line of defense against finalizing a file with a hole: every
+	// chunk reporting success must add up to the full remote size.
+	if got := st.totalDownloaded(); st.Size > 0 && got != st.Size {
+		_ = st.save()
+		return nil, fmt.Errorf("downloader: incomplete: received %d of %d bytes", got, st.Size)
+	}
+
+	// The finished file is exactly as long as the remote file (or, with an
+	// unknown size, as what was received) — never longer, whatever the
+	// .part held before.
+	finalSize := st.Size
+	if finalSize <= 0 {
+		finalSize = st.totalDownloaded()
+	}
+	if err := f.Truncate(finalSize); err != nil {
+		return nil, fmt.Errorf("downloader: set final file size: %w", err)
+	}
 	if err := f.Sync(); err != nil {
 		return nil, fmt.Errorf("downloader: sync temp file: %w", err)
 	}

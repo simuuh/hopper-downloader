@@ -26,9 +26,11 @@ func (e *Engine) downloadChunk(ctx context.Context, f *os.File, req Request, st 
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-			if !st.Resumable {
-				st.resetChunk(idx)
-			}
+		}
+		// Without Range support every attempt receives the file from byte
+		// 0, so its progress must start there too.
+		if !st.Resumable {
+			st.resetChunk(idx)
 		}
 
 		err := e.fetchChunkOnce(ctx, f, req, st, idx)
@@ -73,11 +75,19 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
+	ifRange := false
 	if st.Resumable {
 		if chunk.End >= chunk.Start {
 			httpReq.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, chunk.End))
 		} else {
 			httpReq.Header.Set("Range", fmt.Sprintf("bytes=%d-", start))
+		}
+		// Only the version the bytes on disk belong to may be resumed: if
+		// the file changed, the server answers 200 with the whole new file
+		// instead of the range.
+		if st.Validator != "" {
+			httpReq.Header.Set("If-Range", st.Validator)
+			ifRange = true
 		}
 	}
 
@@ -87,11 +97,20 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 	}
 	defer resp.Body.Close()
 
+	// A chunk that is already complete returns before any request is made,
+	// so a 416 always means bytes are missing — the file behind the URL
+	// shrank or is no longer served. Retrying the same range won't help.
 	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
-		return nil // already fully downloaded
+		return &permanentError{fmt.Errorf("server cannot serve bytes %d- (remote file changed?)", start)}
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	// 200 to an If-Range request from a server reporting another version:
+	// the remote file was replaced and nothing on disk belongs to it. With
+	// the same validator the server merely ignores Range, handled below.
+	if ifRange && resp.StatusCode == http.StatusOK && validatorOf(resp.Header) != st.Validator {
+		return &permanentError{fmt.Errorf("%w (expected version %s)", errRemoteChanged, st.Validator)}
 	}
 
 	// An expired/invalid download link very often still answers 200 —
@@ -109,6 +128,13 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 	// same request would just get the same full body again.
 	if st.Resumable && resp.StatusCode == http.StatusOK && start != 0 {
 		return &permanentError{fmt.Errorf("server ignored range request (got 200 for bytes=%d-)", start)}
+	}
+	// A 206 is written at the requested offset, so it must say it carries
+	// exactly that range of exactly this file.
+	if resp.StatusCode == http.StatusPartialContent {
+		if err := checkContentRange(resp.Header.Get("Content-Range"), start, st.Size); err != nil {
+			return &permanentError{err}
+		}
 	}
 
 	var body io.Reader = resp.Body
@@ -179,6 +205,22 @@ func backoffDelay(base time.Duration, attempt int) time.Duration {
 	return time.Duration(d * jitter)
 }
 
+// checkContentRange verifies a 206's Content-Range against the request:
+// it must start at start and, when both are known, report size as the
+// file's total length. An unknown total ("*") is accepted.
+func checkContentRange(headerVal string, start, size int64) error {
+	first, last, total, ok := parseContentRange(headerVal)
+	switch {
+	case !ok:
+		return fmt.Errorf("206 response without a valid Content-Range (%q)", headerVal)
+	case first != start:
+		return fmt.Errorf("server sent bytes %d-%d for a request starting at %d", first, last, start)
+	case total >= 0 && size > 0 && total != size:
+		return fmt.Errorf("server reports a total size of %d bytes, expected %d (remote file changed?)", total, size)
+	}
+	return nil
+}
+
 // permanentError marks a chunk failure that retrying the identical
 // request cannot fix (e.g. a server that ignores Range headers), so
 // downloadChunk gives up immediately instead of burning its retry budget
@@ -201,3 +243,7 @@ func looksLikeHTMLFile(relPath string) bool {
 // errStalled marks a transfer aborted by the stall watchdog — retryable,
 // unlike a cancellation of the caller's own context.
 var errStalled = errors.New("transfer stalled")
+
+// errRemoteChanged marks a transfer whose remote file was replaced by
+// another version mid-download (If-Range mismatch); Download starts over.
+var errRemoteChanged = errors.New("remote file changed during download")
