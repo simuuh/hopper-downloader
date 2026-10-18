@@ -730,12 +730,21 @@ textarea.url-input {
   min-width: 0;
 }
 
+/* The head shrinks with an ellipsis, the tail (part number, extension)
+   never does — see lib/filename.ts. */
 .item-fname {
+  display: flex;
   font-size: 13px;
   white-space: nowrap;
+  min-width: 0;
+}
+.item-fname-head {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+}
+.item-fname-tail {
+  flex-shrink: 0;
 }
 
 .priority-select {
