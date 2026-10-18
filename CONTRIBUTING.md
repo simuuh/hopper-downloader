@@ -17,7 +17,7 @@ larger changes.
 make web     # npm ci + build web/dist (embedded into hopperd via go:embed)
 make build   # go build ./...
 make test    # go vet + go test ./...
-make check   # everything CI runs: tests, golangci-lint, web lint/build, extension checks
+make check   # everything CI runs: tests, golangci-lint, web lint/tests/build, extension checks
 make docker  # docker build -f docker/Dockerfile -t hopper:local .
 ```
 
