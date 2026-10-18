@@ -1287,10 +1287,16 @@ func (m *Manager) complete(id string, res *downloader.Result) {
 // happens to finish *last* is whichever one actually observes the group
 // as complete.
 func (m *Manager) maybeExtract(it *Item) {
-	if m.extractor == nil || m.extractSettings == nil || !m.extractSettings.ExtractEnabled() {
+	if m.extractor == nil || m.extractSettings == nil {
 		return
 	}
 	if it.Filename == "" || !extract.IsArchive(it.Filename) {
+		return
+	}
+	// Every reason not to extract is logged: otherwise a finished archive
+	// that stays packed can't be told apart from a bug.
+	if !m.extractSettings.ExtractEnabled() {
+		m.log.Info("queue: auto-extract is off, archive not extracted", "item_id", it.ID, "archive", it.Filename)
 		return
 	}
 	group := extract.GroupBase(it.Filename)
@@ -1298,7 +1304,7 @@ func (m *Manager) maybeExtract(it *Item) {
 	m.mu.RLock()
 	var firstPart *Item
 	var siblings []*Item
-	allDone := true
+	pending, stuck := 0, 0
 	for _, sib := range m.items {
 		if sib.PackageID != it.PackageID || sib.Filename == "" {
 			continue
@@ -1307,7 +1313,12 @@ func (m *Manager) maybeExtract(it *Item) {
 			continue
 		}
 		if sib.State != StateDone {
-			allDone = false
+			pending++
+			// Paused or failed parts never finish without the user,
+			// unlike queued or downloading ones.
+			if sib.State == StatePaused || sib.State == StateError {
+				stuck++
+			}
 		}
 		cp := *sib
 		siblings = append(siblings, &cp)
@@ -1319,7 +1330,17 @@ func (m *Manager) maybeExtract(it *Item) {
 	pkg := m.packages[it.PackageID]
 	m.mu.RUnlock()
 
-	if !allDone || firstPart == nil {
+	switch {
+	case stuck > 0:
+		m.log.Info("queue: extract waits for parts that won't finish on their own (paused or failed); start or retry them",
+			"item_id", it.ID, "archive", group, "waiting_for", stuck, "pending", pending)
+		return
+	case pending > 0:
+		m.log.Debug("queue: extract waits for remaining parts", "item_id", it.ID, "archive", group, "pending", pending)
+		return
+	case firstPart == nil:
+		m.log.Warn("queue: extract: first part of the archive is not in this package, nothing extracted",
+			"item_id", it.ID, "archive", group)
 		return
 	}
 
@@ -1397,9 +1418,8 @@ func (m *Manager) allPartsOnDisk(siblings []*Item) (bool, error) {
 func (m *Manager) runExtraction(firstPart *Item, siblings []*Item, group, pkgPassword, extraPassword string) {
 	start := time.Now()
 
-	// Clears maybeExtract's dedup entry for this group regardless of how
-	// this call ends (including RetryExtraction's manual path, which
-	// never set one — deleting a missing key is a no-op): without this,
+	// Releases the group's claim (set by maybeExtract or RetryExtraction)
+	// regardless of how this call ends: without this,
 	// deleting every item in an archive group and re-adding the same
 	// archive later would never trigger extraction again, since
 	// extractTriggered has no other eviction path.
@@ -1570,11 +1590,21 @@ func (m *Manager) deleteArchiveParts(packageID, group string) {
 }
 
 // ErrExtractNotRetryable is returned by RetryExtraction when the item
-// isn't in the one state re-extraction is defined for: StateDone with
-// ExtractStateExtractFailed. Anything else (still downloading, never
-// attempted extraction, already extracted) has no well-defined "retry"
-// semantics.
-var ErrExtractNotRetryable = errors.New("queue: item is not done or does not have a failed extraction")
+// isn't a finished archive waiting for extraction: it must be StateDone
+// and either never extracted (auto-extract was off when it finished) or
+// with a failed extraction. One still downloading, being extracted or
+// already extracted is rejected.
+var ErrExtractNotRetryable = errors.New("queue: item is not a finished archive that is unextracted or failed to extract")
+
+// ErrArchiveIncomplete is returned by RetryExtraction when another part
+// of the item's multi-part archive isn't done yet (e.g. still paused):
+// extraction would only fail on the missing volume.
+var ErrArchiveIncomplete = errors.New("queue: not every part of the archive is downloaded yet")
+
+// ErrExtractInProgress is returned by RetryExtraction when the item's
+// archive is already being extracted (another request, or the automatic
+// extraction after the last part finished).
+var ErrExtractInProgress = errors.New("queue: archive is already being extracted")
 
 // ErrArchiveMissing is returned by RetryExtraction when the item's
 // archive (or, for a multi-part set, its first part) can no longer be
@@ -1583,10 +1613,12 @@ var ErrExtractNotRetryable = errors.New("queue: item is not done or does not hav
 // extract_failed record.
 var ErrArchiveMissing = errors.New("queue: archive file not found on disk")
 
-// RetryExtraction re-runs extraction for id, which must be StateDone
-// with ExtractState ExtractStateExtractFailed (ErrExtractNotRetryable
-// otherwise) and still have its archive's first part present on disk
-// (ErrArchiveMissing otherwise). extraPassword, if non-empty, is tried
+// RetryExtraction extracts id's archive on request: id must be StateDone
+// and either never extracted (auto-extract was off when it finished) or
+// with a failed extraction (ErrExtractNotRetryable otherwise), every part
+// of its archive set must be done (ErrArchiveIncomplete otherwise), and
+// its first part must still be on disk (ErrArchiveMissing otherwise).
+// It works whether auto-extract is on or not. extraPassword, if non-empty, is tried
 // ahead of the persisted extract_passwords list for this attempt only —
 // see runExtraction's doc comment; it is never written to settings.
 //
@@ -1604,7 +1636,7 @@ func (m *Manager) RetryExtraction(id, extraPassword string) error {
 		m.mu.RUnlock()
 		return ErrNotFound
 	}
-	if it.State != StateDone || it.ExtractState != ExtractStateExtractFailed {
+	if it.State != StateDone || (it.ExtractState != "" && it.ExtractState != ExtractStateExtractFailed) {
 		m.mu.RUnlock()
 		return ErrExtractNotRetryable
 	}
@@ -1613,15 +1645,20 @@ func (m *Manager) RetryExtraction(id, extraPassword string) error {
 		return ErrExtractNotRetryable
 	}
 	group := extract.GroupBase(it.Filename)
+	pkgID := it.PackageID
 
 	var firstPart *Item
 	var siblings []*Item
+	allDone := true
 	for _, sib := range m.items {
 		if sib.PackageID != it.PackageID || sib.Filename == "" {
 			continue
 		}
 		if !extract.IsArchive(sib.Filename) || extract.GroupBase(sib.Filename) != group {
 			continue
+		}
+		if sib.State != StateDone {
+			allDone = false
 		}
 		cp := *sib
 		siblings = append(siblings, &cp)
@@ -1633,6 +1670,9 @@ func (m *Manager) RetryExtraction(id, extraPassword string) error {
 	pkg := m.packages[it.PackageID]
 	m.mu.RUnlock()
 
+	if !allDone {
+		return ErrArchiveIncomplete
+	}
 	if firstPart == nil {
 		return ErrArchiveMissing
 	}
@@ -1657,7 +1697,33 @@ func (m *Manager) RetryExtraction(id, extraPassword string) error {
 		pkgPassword = pkg.Password
 	}
 
-	m.setExtractState(it.PackageID, group, "", "")
+	// Claim the group the same way maybeExtract does (runExtraction
+	// releases it), so concurrent requests — or a request while the
+	// automatic extraction runs — start one extraction, not two writing
+	// into the same directory. The state is checked again once claimed: a
+	// request that read it before another extraction finished must not
+	// extract the archive a second time.
+	triggerKey := pkgID + "|" + group
+	m.extractTriggeredMu.Lock()
+	if m.extractTriggered[triggerKey] {
+		m.extractTriggeredMu.Unlock()
+		return ErrExtractInProgress
+	}
+	m.extractTriggered[triggerKey] = true
+	m.extractTriggeredMu.Unlock()
+
+	m.mu.RLock()
+	cur, ok := m.items[id]
+	stillPending := ok && (cur.ExtractState == "" || cur.ExtractState == ExtractStateExtractFailed)
+	m.mu.RUnlock()
+	if !stillPending {
+		m.extractTriggeredMu.Lock()
+		delete(m.extractTriggered, triggerKey)
+		m.extractTriggeredMu.Unlock()
+		return ErrExtractNotRetryable
+	}
+
+	m.setExtractState(pkgID, group, "", "")
 	go m.runExtraction(firstPart, siblings, group, pkgPassword, extraPassword)
 	return nil
 }

@@ -80,22 +80,25 @@ however many items you're showing (e.g. everything the UI currently has
 rendered). IDs it doesn't mention keep their current position; this
 matches what a drag-and-drop queue table naturally produces.
 
-### Re-extracting a failed archive
+### Extracting an archive on request
 
 ```
 POST /queue/{id}/extract
 { "password": "..." }   # optional
 ```
 
-Only valid for an item that's `state: "done"` with
-`extract_state: "extract_failed"` — anything else is `400`. Resets
-`extract_state` (clears it, same starting point a fresh completion
-event would see) and re-runs extraction in the background; watch `/ws`
-for the item transitioning to `extracting` and then `extracted` or
-`extract_failed` again. `password`, if given, is tried ahead of the
-persisted `extract_passwords` (see `POST /settings`) for this attempt
-only — it's never written to settings. `400` if the archive's file(s)
-can no longer be found on disk; `404` if the item doesn't exist.
+Valid for an item that's `state: "done"` and either never extracted (no
+`extract_state` — auto-extract was off when it finished) or with
+`extract_state: "extract_failed"`; works whether auto-extract is on or
+not. Anything else (extracting, extracted, not done) is `400`. Resets
+`extract_state` and runs extraction in the background; watch `/ws` for
+the item transitioning to `extracting` and then `extracted` or
+`extract_failed`. `password`, if given, is tried ahead of the persisted
+`extract_passwords` (see `POST /settings`) for this attempt only — it's
+never written to settings. `409` if another part of the archive isn't
+done yet or the archive is already being extracted; `400` if the
+archive's file(s) can no longer be found on disk; `404` if the item
+doesn't exist.
 
 ### Solving a free-download captcha
 

@@ -417,12 +417,14 @@ paths:
   /queue/{id}/extract:
     post:
       operationId: retryExtractQueueItem
-      summary: Re-run extraction for an item with a failed archive extraction
+      summary: Extract a finished archive that is unextracted or failed to extract
       description: >-
-        Only valid for an item that is state=done with
-        extract_state=extract_failed. Resets extract_state and re-runs
-        extraction in the background; watch /ws for the outcome. The
-        request body is optional.
+        Valid for an item that is state=done and either has no
+        extract_state (never extracted, e.g. auto-extract was off) or
+        extract_state=extract_failed, regardless of the auto-extract
+        setting. Resets extract_state and runs extraction in the
+        background; watch /ws for the outcome. The request body is
+        optional.
       parameters: [ { $ref: '#/components/parameters/ItemID' } ]
       requestBody:
         required: false
@@ -438,13 +440,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/QueueItem'
         '400':
-          description: Item is not done/extract_failed, or its archive is no longer on disk
+          description: Item is not a finished, unextracted or failed archive, or its archive is no longer on disk
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           $ref: '#/components/responses/Error'
+        '409':
+          description: Another part of the archive isn't done yet, or the archive is already being extracted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /queue/{id}/captcha:
     post:

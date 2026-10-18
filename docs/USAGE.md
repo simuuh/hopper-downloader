@@ -61,6 +61,10 @@ signed in yet, the links wait until you are.
 - With `extract.enabled`, archives are extracted once all parts are on
   disk; parts download in order (`queue.sequential_parts`). Failed
   extraction (e.g. wrong password) can be retried from the file row.
+  An archive that finished while auto-extract was off shows "Extract
+  now" on its first part. If an archive isn't extracted, hopperd's log
+  says why (`queue: auto-extract is off …`, `queue: extract waits for
+  parts that won't finish on their own …` — start or retry those parts).
 
 ## Hoster accounts
 

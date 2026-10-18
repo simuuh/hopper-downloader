@@ -1,4 +1,5 @@
 import { useEffect, useState, type DragEvent } from 'react'
+import { isFirstArchivePart } from '../lib/archive'
 import { formatBytes, formatCountdown, formatSpeed, itemName } from '../lib/format'
 import type { Priority, QueueItem } from '../lib/types'
 
@@ -53,6 +54,9 @@ export function ItemRow({
   const [nameDraft, setNameDraft] = useState('')
   const [editError, setEditError] = useState<string | null>(null)
   const editable = item.state === 'queued' || item.state === 'paused' || item.state === 'error'
+  // A finished archive that was never extracted (auto-extract was off):
+  // offered on its first part, which the server extracts the whole set from.
+  const canExtract = item.state === 'done' && !item.extract_state && isFirstArchivePart(item.filename)
 
   // now ticks once per second only while a countdown is actually shown,
   // so the "Waiting X:XX" text below counts down live without waiting
@@ -257,6 +261,11 @@ export function ItemRow({
               <i className="ti ti-archive" />
             </button>
           ))}
+        {canExtract && (
+          <button className="icon-btn" title="Extract now" onClick={() => onRetryExtract(item.id)}>
+            <i className="ti ti-archive" />
+          </button>
+        )}
         {editable && (
           <button className="icon-btn" title="Edit link / filename" onClick={openEdit}>
             ✎

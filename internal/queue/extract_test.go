@@ -3,10 +3,12 @@ package queue
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -482,12 +484,12 @@ func TestRetryExtraction_NotDoneRejected(t *testing.T) {
 	}
 }
 
-func TestRetryExtraction_NotExtractFailedRejected(t *testing.T) {
+func TestRetryExtraction_AlreadyExtractedRejected(t *testing.T) {
 	fe := &fakeExtractor{}
 	fs := &fakeExtractSettings{enabled: true}
 	mgr, _ := newExtractTestManager(t, fe, fs, 1)
 
-	it := &Item{ID: newID(), Filename: "archive.zip"} // ExtractState is the zero value ""
+	it := &Item{ID: newID(), Filename: "archive.zip", ExtractState: ExtractStateExtracted}
 	injectDoneItem(t, mgr, it)
 
 	if err := mgr.RetryExtraction(it.ID, ""); !errors.Is(err, ErrExtractNotRetryable) {
@@ -613,5 +615,209 @@ func TestRetryExtraction_MultiPartUsesFirstPartAndPackagePassword(t *testing.T) 
 	}
 	if call.pkgPassword != "pkgpass" {
 		t.Errorf("pkgPassword = %q, want pkgpass", call.pkgPassword)
+	}
+}
+
+// A finished archive that was never extracted (auto-extract was off when
+// it completed) can be extracted on request, even with auto-extract
+// still off.
+func TestRetryExtraction_NeverExtractedArchiveIsExtracted(t *testing.T) {
+	fe := &fakeExtractor{}
+	fs := &fakeExtractSettings{enabled: false}
+	mgr, baseDir := newExtractTestManager(t, fe, fs, 1)
+
+	if err := os.WriteFile(filepath.Join(baseDir, "archive.zip"), []byte("zip content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	it := &Item{ID: newID(), Filename: "archive.zip"} // ExtractState "": never attempted
+	injectDoneItem(t, mgr, it)
+
+	if err := mgr.RetryExtraction(it.ID, ""); err != nil {
+		t.Fatalf("RetryExtraction: %v", err)
+	}
+	waitForExtractState(t, mgr, it.ID)
+	if fe.callCount() != 1 {
+		t.Errorf("extractor called %d times, want 1", fe.callCount())
+	}
+}
+
+// Extracting a multi-part set whose other parts haven't finished would
+// only fail on the missing volumes: refuse it up front.
+func TestRetryExtraction_PartsStillPendingRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state ExtractState
+	}{{"never extracted", ""}, {"failed before", ExtractStateExtractFailed}} {
+		t.Run(tc.name, func(t *testing.T) {
+			fe := &fakeExtractor{}
+			fs := &fakeExtractSettings{enabled: true}
+			mgr, baseDir := newExtractTestManager(t, fe, fs, 1)
+
+			pkg := &Package{ID: "pkg1", Name: "Archive", CreatedAt: time.Now()}
+			mgr.mu.Lock()
+			mgr.packages[pkg.ID] = pkg
+			mgr.mu.Unlock()
+			pkgDir := filepath.Join(baseDir, "Archive")
+			if err := os.MkdirAll(pkgDir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(pkgDir, "archive.part01.rar"), []byte("data"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			part1 := &Item{ID: newID(), PackageID: pkg.ID, Filename: "archive.part01.rar", ExtractState: tc.state}
+			injectDoneItem(t, mgr, part1)
+			part2 := &Item{ID: newID(), PackageID: pkg.ID, Filename: "archive.part02.rar"}
+			injectDoneItem(t, mgr, part2)
+			mgr.mu.Lock()
+			mgr.items[part2.ID].State = StatePaused // added paused, never started
+			mgr.mu.Unlock()
+
+			if err := mgr.RetryExtraction(part1.ID, ""); err == nil {
+				t.Fatal("RetryExtraction accepted a set with a part still paused")
+			}
+			time.Sleep(50 * time.Millisecond)
+			if fe.callCount() != 0 {
+				t.Errorf("extractor called %d times, want 0", fe.callCount())
+			}
+		})
+	}
+}
+
+// blockingExtractor holds every extraction until release is closed, so a
+// test can act while one is still running.
+type blockingExtractor struct {
+	fakeExtractor
+	release chan struct{}
+}
+
+func (b *blockingExtractor) Extract(ctx context.Context, srcPath, destDir, pkgPassword string, userPasswords []string) (*extract.Result, error) {
+	<-b.release
+	return b.fakeExtractor.Extract(ctx, srcPath, destDir, pkgPassword, userPasswords)
+}
+
+// Two extraction requests for the same archive at once (a double click,
+// two browser tabs) must start one extraction, not two unrar processes
+// writing into the same directory.
+func TestRetryExtraction_ConcurrentRequestsStartOneExtraction(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		be := &blockingExtractor{release: make(chan struct{})}
+		fs := &fakeExtractSettings{enabled: true}
+		baseDir := t.TempDir()
+		eng := downloader.New(downloader.Config{BaseDir: baseDir, RetryMax: 1, RetryBackoffBase: 5 * time.Millisecond})
+		mgr, err := New(newTestStore(t), plugins.NewRegistry(directhttp.New()), eng, nil, nil, be, fs, scheduler.New(), discardLogger(), Config{ParallelFiles: 1, PollInterval: 15 * time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(baseDir, "archive.zip"), []byte("zip content"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		it := &Item{ID: newID(), Filename: "archive.zip", ExtractState: ExtractStateExtractFailed}
+		injectDoneItem(t, mgr, it)
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var accepted sync.Map
+		for k := 0; k < 2; k++ {
+			wg.Add(1)
+			go func(k int) {
+				defer wg.Done()
+				<-start
+				if mgr.RetryExtraction(it.ID, "") == nil {
+					accepted.Store(k, true)
+				}
+			}(k)
+		}
+		close(start)
+		wg.Wait()
+		close(be.release)
+		waitForExtractState(t, mgr, it.ID)
+		time.Sleep(20 * time.Millisecond)
+
+		n := 0
+		accepted.Range(func(_, _ any) bool { n++; return true })
+		if n != 1 || be.callCount() != 1 {
+			t.Fatalf("round %d: %d requests accepted, %d extractions run; want exactly 1 of each", i, n, be.callCount())
+		}
+	}
+}
+
+// logBuffer is a concurrency-safe io.Writer for capturing log output.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
+}
+
+// When a finished archive part does not lead to an extraction, the log
+// says why — otherwise "nothing happened" can't be told apart from a bug.
+func TestMaybeExtract_LogsWhyItDoesNotExtract(t *testing.T) {
+	type part struct {
+		name  string
+		state State
+	}
+	cases := []struct {
+		name    string
+		enabled bool
+		parts   []part // the first one is the part that just finished
+		want    string // "" = no info-level explanation expected
+	}{
+		{"auto-extract off", false, []part{{"archive.zip", StateDone}}, "auto-extract is off"},
+		{"part paused", true, []part{{"archive.part01.rar", StateDone}, {"archive.part02.rar", StatePaused}}, "won't finish on their own"},
+		{"part failed", true, []part{{"archive.part01.rar", StateDone}, {"archive.part02.rar", StateError}}, "won't finish on their own"},
+		{"first part missing", true, []part{{"archive.part02.rar", StateDone}}, "first part"},
+		{"other parts still downloading", true, []part{{"archive.part01.rar", StateDone}, {"archive.part02.rar", StateDownloading}}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &logBuffer{}
+			log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			fe := &fakeExtractor{}
+			fs := &fakeExtractSettings{enabled: tc.enabled}
+			eng := downloader.New(downloader.Config{BaseDir: t.TempDir()})
+			mgr, err := New(newTestStore(t), plugins.NewRegistry(directhttp.New()), eng, nil, nil, fe, fs, scheduler.New(), log, Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var finished *Item
+			for i, p := range tc.parts {
+				it := &Item{ID: newID(), PackageID: "pkg1", Filename: p.name}
+				injectDoneItem(t, mgr, it)
+				mgr.mu.Lock()
+				mgr.items[it.ID].State = p.state
+				mgr.mu.Unlock()
+				if i == 0 {
+					cp := *it
+					finished = &cp
+				}
+			}
+
+			mgr.maybeExtract(finished)
+
+			out := logs.String()
+			if tc.want == "" {
+				if strings.Contains(out, "extract") {
+					t.Errorf("unexpected info-level log while parts are still downloading:\n%s", out)
+				}
+				return
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("log does not explain why nothing was extracted (want %q):\n%s", tc.want, out)
+			}
+			if fe.callCount() != 0 {
+				t.Errorf("extractor called %d times, want 0", fe.callCount())
+			}
+		})
 	}
 }
