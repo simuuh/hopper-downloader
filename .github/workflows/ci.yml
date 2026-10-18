@@ -1,11 +1,14 @@
 name: CI
 
+# Runs on every push and PR — no paths filter. A workflow skipped by a
+# paths filter reports no status at all, so a docs-only PR would wait
+# forever on required checks. Instead the `changes` job decides, and the
+# other jobs are skipped by `if:` for docs-only changes; a job skipped
+# that way counts as passed for required status checks.
 on:
   push:
     branches: [main]
-    paths-ignore: ['**.md', 'docs/**', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
   pull_request:
-    paths-ignore: ['**.md', 'docs/**', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
   workflow_dispatch:
 
 permissions:
@@ -25,8 +28,40 @@ env:
   GOLANGCI_LINT_VERSION: v2.14.0
 
 jobs:
+  # Mark this job as a required check too: if it failed, the jobs below
+  # would be skipped, and skipped jobs pass required checks.
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        name: Anything besides docs changed?
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # No usable base (new branch, manual run, rewritten history): run everything.
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BASE" HEAD)
+          echo "$changed"
+          if echo "$changed" | grep -qvE '(\.md$|^docs/|^site/|^LICENSE$|^\.github/ISSUE_TEMPLATE/)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   web:
     name: Web UI (lint + build)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -51,6 +86,8 @@ jobs:
     name: Go (vet, test -race, lint)
     # Runs in parallel with the web job: tests don't need the real UI, only
     # something for //go:embed all:dist to embed (web/embed.go).
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -70,9 +107,10 @@ jobs:
 
   docker:
     name: Docker image builds
-    # Only where it can catch something the go/web jobs can't: on PRs. A
-    # push to master is followed by a real release build anyway.
-    if: github.event_name == 'pull_request'
+    # Only where it can catch something the go/web jobs can't: on PRs that
+    # change code. A push to main is followed by a real release build anyway.
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
