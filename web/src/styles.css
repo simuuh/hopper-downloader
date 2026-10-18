@@ -1454,9 +1454,25 @@ button.stat-period.stat-period-tab.active {
   .main {
     padding: 10px;
   }
-  .stats-grid,
   .stats-overview {
     grid-template-columns: repeat(2, 1fr);
+  }
+  /* Queue stats as one compact row, so the downloads start higher up. */
+  .stats-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .stat-card {
+    padding: 6px 8px;
+  }
+  .stat-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .stat-value {
+    font-size: 16px;
   }
   .settings-grid {
     grid-template-columns: 1fr;
@@ -1464,18 +1480,44 @@ button.stat-period.stat-period-tab.active {
   .col-header {
     display: none;
   }
+  /* Two lines per file: name, then progress with state and actions. */
   .item-row {
-    grid-template-columns: 28px 1fr auto;
-    row-gap: 6px;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'check info info info'
+      'progress progress speed actions';
+    column-gap: 10px;
+    row-gap: 4px;
+  }
+  .item-row .item-icon-col {
+    grid-area: check;
+  }
+  .item-row .item-info {
+    grid-area: info;
   }
   .item-row .item-progress {
-    grid-column: 2 / -1;
+    grid-area: progress;
   }
   .item-row .item-speed {
-    grid-column: 2;
+    grid-area: speed;
   }
+  .item-row .item-actions {
+    grid-area: actions;
+  }
+  .item-icon {
+    display: none;
+  }
+  /* The package name gets its own line instead of shrinking to "E…". */
   .pkg-header {
     flex-wrap: wrap;
+  }
+  .pkg-name {
+    flex-basis: calc(100% - 28px);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .pkg-actions {
+    margin-left: auto;
   }
   .pkg-meta {
     width: 100%;
