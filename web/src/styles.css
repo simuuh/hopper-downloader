@@ -1575,17 +1575,28 @@ button.stat-period.stat-period-tab.active {
   }
   .nav button,
   .filter-tab,
+  .stat-period,
   .logout-btn,
   .btn {
     min-height: 36px;
+  }
+  input[type='text'],
+  input[type='password'],
+  input[type='url'],
+  input[type='number'],
+  select,
+  textarea {
+    min-height: 40px;
   }
   .priority-select {
     min-height: 32px;
     font-size: 12px;
   }
-  input[type='checkbox'] {
+  input[type='checkbox'],
+  .panel > label.settings-checkbox input[type='checkbox'] {
     width: 20px;
     height: 20px;
+    flex-shrink: 0;
   }
   .link-button,
   .premium-link {
