@@ -55,6 +55,13 @@ and proxies the API to a running hopperd.
   # ... work, commit ...
   git fetch origin && git merge origin/main  # before push / PR
   ```
+- `main` is meant to be protected by a ruleset requiring these CI checks:
+  `Detect code changes`, `Go (vet, test -race, lint)` and
+  `Web UI (lint + build)`. The workflow always runs; for a PR that only
+  touches docs (`*.md`, `docs/`, `site/`) the Go and Web jobs are
+  skipped, which counts as passed — so don't add a paths filter to
+  `ci.yml`, or docs-only PRs would wait forever for checks that never
+  report.
 
 ## Code style
 
