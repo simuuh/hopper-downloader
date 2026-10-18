@@ -1430,9 +1430,35 @@ button.stat-period.stat-period-tab.active {
 /* ---- small screens ---- */
 
 @media (max-width: 760px) {
+  /* The page itself scrolls (not .main): the browser can hide its address
+     bar while scrolling, and pull-to-refresh works. */
+  html,
+  body,
+  #root {
+    height: auto;
+  }
+  .app {
+    height: auto;
+    min-height: 100dvh;
+  }
+  .main {
+    overflow: visible;
+  }
+  .page-header.sticky {
+    top: 0;
+    margin-top: -10px;
+    padding-top: 10px;
+  }
+  .toast {
+    left: 10px;
+    right: 10px;
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    max-width: none;
+  }
   .topbar {
     flex-wrap: wrap;
     gap: 8px 12px;
+    padding-top: max(8px, env(safe-area-inset-top));
   }
   .topbar .spacer {
     display: none;
@@ -1452,7 +1478,7 @@ button.stat-period.stat-period-tab.active {
     display: none;
   }
   .main {
-    padding: 10px;
+    padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
   }
   .stats-overview {
     grid-template-columns: repeat(2, 1fr);
