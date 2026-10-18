@@ -1,4 +1,5 @@
 import { useEffect, useState, type DragEvent } from 'react'
+import { literalText } from '../lib/inputProps'
 import { isFirstArchivePart } from '../lib/archive'
 import { splitName } from '../lib/filename'
 import { formatBytes, formatCountdown, formatSpeed, itemName } from '../lib/format'
@@ -249,6 +250,7 @@ export function ItemRow({
           (showPasswordPrompt ? (
             <span className="extract-password-popover" onClick={(e) => e.stopPropagation()}>
               <input
+                {...literalText}
                 type="password"
                 className="extract-password-input"
                 placeholder="Archive password"
@@ -313,6 +315,7 @@ export function ItemRow({
             <label>
               Filename
               <input
+                {...literalText}
                 type="text"
                 className="captcha-modal-input"
                 placeholder="(from hoster)"
@@ -347,6 +350,7 @@ export function ItemRow({
               <img className="captcha-modal-image" src={item.captcha_url} alt="Captcha challenge" />
             )}
             <input
+              {...literalText}
               type="text"
               className="captcha-modal-input"
               placeholder="Enter the text shown above"

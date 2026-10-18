@@ -4,6 +4,7 @@ import { ImportDropzone } from '../components/ImportDropzone'
 import { ItemRow } from '../components/ItemRow'
 import { PageHeader } from '../components/Page'
 import { NARROW_SCREEN, useMediaQuery } from '../hooks/useMediaQuery'
+import { literalText } from '../lib/inputProps'
 import { api, ApiError, setToken, tokenNearExpiry } from '../lib/api'
 import { formatBytes, formatCountdown, formatSpeed, itemName } from '../lib/format'
 import { finishedLast, groupKeyOf, sortQueue } from '../lib/order'
@@ -561,6 +562,7 @@ export function QueuePage({
         {showSaveTo ? (
           <span className="save-to-popover">
             <input
+              {...literalText}
               type="text"
               className="save-to-input"
               placeholder={saveTo || 'Save to (optional subfolder)…'}
@@ -767,6 +769,7 @@ export function QueuePage({
                     }}
                   >
                     <textarea
+                      {...literalText}
                       className="url-input"
                       rows={3}
                       autoFocus

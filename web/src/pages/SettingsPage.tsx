@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { PageHeader, PageState } from '../components/Page'
+import { literalText } from '../lib/inputProps'
 import { api, ApiError } from '../lib/api'
 import {
   notificationsEnabled,
@@ -145,6 +146,7 @@ export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
           <label>
             Download folder
             <input
+              {...literalText}
               type="text"
               value={settings.download_path}
               onChange={(e) => update('download_path', e.target.value)}
@@ -241,6 +243,7 @@ export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
         <p className="hint">Tried in order, after the package&apos;s own password.</p>
         <div className="row">
           <input
+            {...literalText}
             type="text"
             placeholder="Add a password"
             value={newPassword}
