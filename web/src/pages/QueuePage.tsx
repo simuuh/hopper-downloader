@@ -3,9 +3,11 @@ import { AddLinkForm } from '../components/AddLinkForm'
 import { ImportDropzone } from '../components/ImportDropzone'
 import { ItemRow } from '../components/ItemRow'
 import { PageHeader } from '../components/Page'
+import { NARROW_SCREEN, useMediaQuery } from '../hooks/useMediaQuery'
+import { literalText } from '../lib/inputProps'
 import { api, ApiError, setToken, tokenNearExpiry } from '../lib/api'
 import { formatBytes, formatCountdown, formatSpeed, itemName } from '../lib/format'
-import { groupKeyOf, sortQueue } from '../lib/order'
+import { finishedLast, groupKeyOf, sortQueue } from '../lib/order'
 import type { ItemState, Package, PackageAction, QueueItem } from '../lib/types'
 
 type Action = 'pause' | 'resume' | 'retry' | 'cancel'
@@ -103,6 +105,9 @@ export function QueuePage({
   const [saveToDraft, setSaveToDraft] = useState('')
   const [showSaveTo, setShowSaveTo] = useState(false)
   const sortedItems = useMemo(() => sortQueue(items), [items])
+  // On phones a package of one file is shown as just its file row: the
+  // package header would repeat the same name and size.
+  const narrow = useMediaQuery(NARROW_SCREEN)
   // In the Finished view groups start collapsed; expanded tracks the ones
   // opened there (collapsed above is for every other view).
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -129,7 +134,8 @@ export function QueuePage({
   }, [items])
 
   // Shown in start order (see lib/order.ts): top to bottom is the order
-  // the dispatcher starts downloads in.
+  // the dispatcher starts downloads in. In "All", finished packages follow
+  // the ones still in progress.
   const filteredItems = useMemo(() => {
     const items = sortedItems
     switch (filter) {
@@ -140,7 +146,7 @@ export function QueuePage({
       case 'errors':
         return items.filter((i) => i.state === 'error')
       default:
-        return items
+        return finishedLast(items, finishedKeys)
     }
   }, [sortedItems, filter, finishedKeys])
 
@@ -556,6 +562,7 @@ export function QueuePage({
         {showSaveTo ? (
           <span className="save-to-popover">
             <input
+              {...literalText}
               type="text"
               className="save-to-input"
               placeholder={saveTo || 'Save to (optional subfolder)…'}
@@ -654,7 +661,8 @@ export function QueuePage({
             <span>Actions</span>
           </div>
           {groups.map((group) => {
-            const isCollapsed = filter === 'done' ? !expanded.has(group.key) : collapsed.has(group.key)
+            const single = narrow && group.items.length === 1
+            const isCollapsed = !single && (filter === 'done' ? !expanded.has(group.key) : collapsed.has(group.key))
             const isFinished = finishedKeys.has(group.key)
             const extracted = isFinished ? extractSummary(group.items) : null
             const totalSize = group.items.reduce((sum, i) => sum + i.size, 0)
@@ -672,85 +680,87 @@ export function QueuePage({
             const has = (s: ItemState) => group.items.some((i) => i.state === s)
             const stop = (e: { stopPropagation: () => void }) => e.stopPropagation()
             return (
-              <div className="pkg-group" key={group.key}>
-                <div
-                  className="pkg-header"
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => toggleGroup(group.key)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      toggleGroup(group.key)
-                    }
-                  }}
-                >
-                  <i className="ti ti-folder" />
-                  <span className="pkg-name">{group.name}</span>
-                  <span className="pkg-meta mono">
-                    {doneCount}/{group.items.length} file{group.items.length === 1 ? '' : 's'} · {formatBytes(totalSize)}
-                    {groupSpeed > 0 && ` · ${formatSpeed(groupSpeed)}`}
-                    {etaSeconds > 0 && ` · ETA ${formatCountdown(etaSeconds)}`}
-                    {isFinished && ` · finished ${formatFinished(finishedAt(group.items))}`}
-                    {isFinished && pkgId && ` · ${packagesById.get(pkgId)?.path || group.name}/`}
-                  </span>
-                  {totalSize > 0 && (
-                    <span className="pkg-progress" title={`${Math.round(percent)}%`}>
-                      <span className={`progress-fill state-${state}`} style={{ width: `${percent}%` }} />
+              <div className={`pkg-group${single ? ' single' : ''}`} key={group.key}>
+                {!single && (
+                  <div
+                    className="pkg-header"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => toggleGroup(group.key)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        toggleGroup(group.key)
+                      }
+                    }}
+                  >
+                    <i className="ti ti-folder" />
+                    <span className="pkg-name">{group.name}</span>
+                    <span className="pkg-meta mono">
+                      {doneCount}/{group.items.length} file{group.items.length === 1 ? '' : 's'} · {formatBytes(totalSize)}
+                      {groupSpeed > 0 && ` · ${formatSpeed(groupSpeed)}`}
+                      {etaSeconds > 0 && ` · ETA ${formatCountdown(etaSeconds)}`}
+                      {isFinished && ` · finished ${formatFinished(finishedAt(group.items))}`}
+                      {isFinished && pkgId && ` · ${packagesById.get(pkgId)?.path || group.name}/`}
                     </span>
-                  )}
-                  {extracted && (
-                    <span className={`badge ${extracted === 'extracted' ? 'state-done' : 'state-error'}`}>
-                      {extracted === 'extracted' ? 'extracted' : 'extract failed'}
-                    </span>
-                  )}
-                  <span className={`badge state-${badge}`}>{badge}</span>
-                  {pkgId && (
-                    <span className="pkg-actions" onClick={stop} onKeyDown={stop}>
-                      {(has('queued') || has('downloading')) && (
-                        <button className="icon-btn" title="Pause package" onClick={() => void runPackageAction(pkgId, 'pause')}>
-                          <i className="ti ti-player-pause" />
+                    {totalSize > 0 && (
+                      <span className="pkg-progress" title={`${Math.round(percent)}%`}>
+                        <span className={`progress-fill state-${state}`} style={{ width: `${percent}%` }} />
+                      </span>
+                    )}
+                    {extracted && (
+                      <span className={`badge ${extracted === 'extracted' ? 'state-done' : 'state-error'}`}>
+                        {extracted === 'extracted' ? 'extracted' : 'extract failed'}
+                      </span>
+                    )}
+                    <span className={`badge state-${badge}`}>{badge}</span>
+                    {pkgId && (
+                      <span className="pkg-actions" onClick={stop} onKeyDown={stop}>
+                        {(has('queued') || has('downloading')) && (
+                          <button className="icon-btn" title="Pause package" onClick={() => void runPackageAction(pkgId, 'pause')}>
+                            <i className="ti ti-player-pause" />
+                          </button>
+                        )}
+                        {has('paused') && (
+                          <button className="icon-btn" title={badge === 'ready' ? 'Start package' : 'Resume package'} onClick={() => void runPackageAction(pkgId, 'resume')}>
+                            <i className="ti ti-player-play" />
+                          </button>
+                        )}
+                        {has('error') && (
+                          <button className="icon-btn retry" title="Retry failed" onClick={() => void runPackageAction(pkgId, 'retry')}>
+                            <i className="ti ti-refresh" />
+                          </button>
+                        )}
+                        <button
+                          className="icon-btn"
+                          title="Add links to this package"
+                          onClick={() => {
+                            setAddToDraft('')
+                            setAddingTo(addingTo === pkgId ? null : pkgId)
+                          }}
+                        >
+                          +
                         </button>
-                      )}
-                      {has('paused') && (
-                        <button className="icon-btn" title={badge === 'ready' ? 'Start package' : 'Resume package'} onClick={() => void runPackageAction(pkgId, 'resume')}>
-                          <i className="ti ti-player-play" />
+                        <button className="icon-btn" title="Rename package" onClick={() => void renamePackage(pkgId, group.name)}>
+                          ✎
                         </button>
-                      )}
-                      {has('error') && (
-                        <button className="icon-btn retry" title="Retry failed" onClick={() => void runPackageAction(pkgId, 'retry')}>
-                          <i className="ti ti-refresh" />
+                        <button
+                          className="icon-btn danger"
+                          title="Remove package from queue (files stay on disk)"
+                          onClick={() => {
+                            if (window.confirm(`Remove "${group.name}" (${group.items.length} items) from the queue?`)) {
+                              void runPackageAction(pkgId, 'delete')
+                            }
+                          }}
+                        >
+                          <i className="ti ti-x" />
                         </button>
-                      )}
-                      <button
-                        className="icon-btn"
-                        title="Add links to this package"
-                        onClick={() => {
-                          setAddToDraft('')
-                          setAddingTo(addingTo === pkgId ? null : pkgId)
-                        }}
-                      >
-                        +
-                      </button>
-                      <button className="icon-btn" title="Rename package" onClick={() => void renamePackage(pkgId, group.name)}>
-                        ✎
-                      </button>
-                      <button
-                        className="icon-btn danger"
-                        title="Remove package from queue (files stay on disk)"
-                        onClick={() => {
-                          if (window.confirm(`Remove "${group.name}" (${group.items.length} items) from the queue?`)) {
-                            void runPackageAction(pkgId, 'delete')
-                          }
-                        }}
-                      >
-                        <i className="ti ti-x" />
-                      </button>
-                    </span>
-                  )}
-                  <i className={`ti ${isCollapsed ? 'ti-chevron-right' : 'ti-chevron-down'}`} />
-                </div>
-                {pkgId && addingTo === pkgId && (
+                      </span>
+                    )}
+                    <i className={`ti ${isCollapsed ? 'ti-chevron-right' : 'ti-chevron-down'}`} />
+                  </div>
+                )}
+                {!single && pkgId && addingTo === pkgId && (
                   <form
                     className="pkg-add-links"
                     onSubmit={(e) => {
@@ -759,6 +769,7 @@ export function QueuePage({
                     }}
                   >
                     <textarea
+                      {...literalText}
                       className="url-input"
                       rows={3}
                       autoFocus

@@ -15,14 +15,14 @@ test: web
 
 lint: web
 	go vet ./...
-	cd web && npm run lint
+	cd web && npm run lint && npm test
 
 # check runs everything CI runs.
 check: web
 	go vet ./...
 	go test ./...
 	golangci-lint run ./...
-	cd web && npm run lint
+	cd web && npm run lint && npm test
 	for f in extension/*.js; do node --check "$$f" || exit 1; done
 	node extension/test/validate-extension.js
 

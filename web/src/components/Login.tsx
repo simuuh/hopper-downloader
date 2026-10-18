@@ -30,8 +30,14 @@ export function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
       <form className="login-box" onSubmit={handleSubmit}>
         <h1>Hopper</h1>
         <p className="tagline">Privacy-first download manager for power users</p>
+        {/* There is one fixed user; this hidden field lets password
+            managers (Android's autofill included) store and fill the
+            password under a username. */}
+        <input type="text" name="username" autoComplete="username" value="admin" readOnly hidden />
         <input
           type="password"
+          name="password"
+          autoComplete="current-password"
           placeholder="Admin password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}

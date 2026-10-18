@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { PageHeader, PageState } from '../components/Page'
+import { literalText } from '../lib/inputProps'
 import { api, ApiError } from '../lib/api'
 import { formatBytes } from '../lib/format'
 import type { Account, CredentialField, PluginInfo } from '../lib/types'
@@ -86,6 +87,7 @@ function CredentialInputs({
           {f.label}
           {!f.required && <span className="hint"> (optional)</span>}
           <input
+            {...literalText}
             type={f.secret ? 'password' : 'text'}
             autoComplete="off"
             placeholder={keepHint && f.secret ? 'leave empty to keep' : f.placeholder}

@@ -6,8 +6,10 @@ export type ConnectionState = 'connecting' | 'open' | 'closed'
 
 /**
  * Subscribes to /ws and invokes onEvent for every queue.Event received,
- * reconnecting with a fixed backoff if the connection drops. Returns the
- * current connection state for a status indicator.
+ * reconnecting with a fixed backoff if the connection drops (not while
+ * the page is hidden; it reconnects right away when it becomes visible
+ * again — see onVisibilityChange). Returns the current connection state
+ * for a status indicator.
  *
  * `enabled` must flip to true only once a token actually exists (i.e.
  * after login): the effect re-runs whenever it changes, but a stale
@@ -42,6 +44,37 @@ export function useQueueSocket(
     let closedByUs = false
     let ws: WebSocket | null = null
     let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let hiddenSince: number | null = document.hidden ? Date.now() : null
+
+    // reconnectNow drops the current socket (without its onclose
+    // scheduling another retry) and connects right away.
+    function reconnectNow() {
+      if (retryTimer) clearTimeout(retryTimer)
+      retryTimer = undefined
+      if (ws) {
+        ws.onclose = null
+        ws.onerror = null
+        ws.close()
+      }
+      setState('connecting')
+      connect()
+    }
+
+    // Phones suspend background tabs and often drop their connections
+    // silently: a socket can still look open after minutes in the
+    // background. While hidden, no retries are scheduled (battery); on
+    // coming back, a dead socket or one hidden for more than 10 s is
+    // replaced, and onOpen reloads the full state.
+    function onVisibilityChange() {
+      if (document.hidden) {
+        hiddenSince = Date.now()
+        return
+      }
+      const away = hiddenSince === null ? 0 : Date.now() - hiddenSince
+      hiddenSince = null
+      if (!ws || ws.readyState !== WebSocket.OPEN || away > 10_000) reconnectNow()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
 
     function connect() {
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
@@ -63,7 +96,8 @@ export function useQueueSocket(
       }
       ws.onclose = () => {
         setState('closed')
-        if (!closedByUs) {
+        // Hidden: wait for onVisibilityChange instead of polling.
+        if (!closedByUs && !document.hidden) {
           retryTimer = setTimeout(() => {
             setState('connecting')
             connect()
@@ -76,6 +110,7 @@ export function useQueueSocket(
 
     return () => {
       closedByUs = true
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       if (retryTimer) clearTimeout(retryTimer)
       ws?.close()
     }

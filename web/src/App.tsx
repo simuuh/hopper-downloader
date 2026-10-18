@@ -6,17 +6,26 @@ import { useQueueSocket } from './hooks/useQueueSocket'
 import { api, clearToken, getToken } from './lib/api'
 import { clearSharedLinks, peekSharedLinks } from './lib/share'
 import { notificationsEnabled, notifyItemDone, notifyItemError, notifyPackageComplete } from './lib/notifications'
+import { hashForTab, tabFromHash, type Tab } from './lib/route'
 import type { Package, QueueItem } from './lib/types'
 import { AccountsPage } from './pages/AccountsPage'
 import { QueuePage } from './pages/QueuePage'
 import { SettingsPage } from './pages/SettingsPage'
 import { StatsPage } from './pages/StatsPage'
 
-type Tab = 'queue' | 'accounts' | 'stats' | 'settings'
-
 export function App() {
   const [loggedIn, setLoggedIn] = useState(() => getToken() !== null)
-  const [tab, setTab] = useState<Tab>('queue')
+  // The tab follows the URL hash (see lib/route.ts): switching tabs adds a
+  // history entry, and Back/Forward come in as hashchange events.
+  const [tab, setTabState] = useState<Tab>(() => tabFromHash(window.location.hash))
+  useEffect(() => {
+    const onHashChange = () => setTabState(tabFromHash(window.location.hash))
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+  const setTab = (next: Tab) => {
+    if (next !== tabFromHash(window.location.hash)) window.location.hash = hashForTab(next)
+  }
   const [items, setItems] = useState<QueueItem[]>([])
   // Packages are kept here (not only in QueuePage) and updated from the
   // websocket's package_updated/package_removed events, so a package

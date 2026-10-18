@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { literalText } from '../lib/inputProps'
 import { api, ApiError } from '../lib/api'
 
 // countLinks mirrors the server's URL extraction closely enough for the
@@ -59,8 +60,9 @@ export function AddLinkForm({
   return (
     <form className={`add-link-row${expanded ? ' expanded' : ''}`} onSubmit={handleSubmit}>
       <textarea
+        {...literalText}
         className="url-input"
-        placeholder="Paste download links — one or many, any text containing URLs…"
+        placeholder="Paste links — any text containing URLs…"
         value={urls}
         rows={expanded ? 6 : 1}
         onFocus={() => setExpanded(true)}
@@ -77,6 +79,7 @@ export function AddLinkForm({
       />
       {expanded && (
         <input
+          {...literalText}
           type="text"
           className="archive-password-input"
           placeholder="Archive password (optional)"

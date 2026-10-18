@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { PageHeader, PageState } from '../components/Page'
+import { literalText } from '../lib/inputProps'
 import { api, ApiError } from '../lib/api'
 import {
   notificationsEnabled,
@@ -145,6 +146,7 @@ export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
           <label>
             Download folder
             <input
+              {...literalText}
               type="text"
               value={settings.download_path}
               onChange={(e) => update('download_path', e.target.value)}
@@ -213,7 +215,7 @@ export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
             checked={settings.auto_start_imports}
             onChange={(e) => update('auto_start_imports', e.target.checked)}
           />
-          Start imported links immediately (DLC, Click&apos;n&apos;Load) instead of adding them paused
+          Start imported .dlc/.txt links immediately instead of adding them paused (Click&apos;n&apos;Load links always arrive paused)
         </label>
       </div>
 
@@ -241,6 +243,7 @@ export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
         <p className="hint">Tried in order, after the package&apos;s own password.</p>
         <div className="row">
           <input
+            {...literalText}
             type="text"
             placeholder="Add a password"
             value={newPassword}

@@ -10,10 +10,20 @@ export function getThemePreference(): ThemePreference {
   return v === 'light' || v === 'dark' ? v : 'system'
 }
 
+// The top bar's background (--bg-1 in styles.css) per theme, for the
+// browser/status bar color on phones. Keep in sync with styles.css.
+const THEME_COLORS = { light: '#ffffff', dark: '#14171b' } as const
+
 export function applyTheme(pref: ThemePreference = getThemePreference()): void {
   const root = document.documentElement
   if (pref === 'system') root.removeAttribute('data-theme')
   else root.setAttribute('data-theme', pref)
+  // index.html has one theme-color meta per color scheme; a forced theme
+  // gives both its color so the status bar matches the page.
+  for (const meta of document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')) {
+    const scheme = meta.media.includes('light') ? 'light' : 'dark'
+    meta.content = THEME_COLORS[pref === 'system' ? scheme : pref]
+  }
 }
 
 export function setThemePreference(pref: ThemePreference): void {
