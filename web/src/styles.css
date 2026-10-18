@@ -1492,6 +1492,49 @@ button.stat-period.stat-period-tab.active {
   }
 }
 
+/* ---- touch screens ----
+   Phones and tablets get finger-sized controls (Android recommends 48dp
+   targets; 40px keeps rows compact) and slightly larger text. Desktop
+   (fine pointer) keeps the dense layout from docs/BRAND.md. */
+
+@media (pointer: coarse) {
+  body {
+    font-size: 14px;
+  }
+  .icon-btn {
+    width: 40px;
+    height: 40px;
+  }
+  .nav button,
+  .filter-tab,
+  .logout-btn,
+  .btn {
+    min-height: 36px;
+  }
+  .priority-select {
+    min-height: 32px;
+    font-size: 12px;
+  }
+  input[type='checkbox'] {
+    width: 20px;
+    height: 20px;
+  }
+  .link-button,
+  .premium-link {
+    display: inline-block;
+    padding: 8px 4px;
+  }
+  .stat-label,
+  .pkg-meta,
+  .progress-text,
+  .version,
+  .badge,
+  .hint,
+  .item-speed-value {
+    font-size: 12px;
+  }
+}
+
 /* ---- accounts ---- */
 
 .page-message {
