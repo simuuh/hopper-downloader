@@ -8,6 +8,7 @@ import { literalText } from '../lib/inputProps'
 import { api, ApiError, setToken, tokenNearExpiry } from '../lib/api'
 import { formatBytes, formatCountdown, formatSpeed, itemName } from '../lib/format'
 import { finishedLast, groupKeyOf, sortQueue } from '../lib/order'
+import { packageProgress } from '../lib/progress'
 import type { ItemState, Package, PackageAction, QueueItem } from '../lib/types'
 
 type Action = 'pause' | 'resume' | 'retry' | 'cancel'
@@ -665,17 +666,11 @@ export function QueuePage({
             const isCollapsed = !single && (filter === 'done' ? !expanded.has(group.key) : collapsed.has(group.key))
             const isFinished = finishedKeys.has(group.key)
             const extracted = isFinished ? extractSummary(group.items) : null
-            const totalSize = group.items.reduce((sum, i) => sum + i.size, 0)
             const state = worstState(group.items)
             const badge = groupBadge(group.items)
             const pkgId = group.items[0]?.package_id
-            const doneBytes = group.items.reduce(
-              (sum, i) => sum + (i.state === 'done' ? Math.max(i.size, i.downloaded) : i.downloaded),
-              0,
-            )
-            const groupSpeed = group.items.reduce((sum, i) => sum + (i.state === 'downloading' ? i.speed : 0), 0)
-            const percent = totalSize > 0 ? Math.min(100, (doneBytes / totalSize) * 100) : 0
-            const etaSeconds = groupSpeed > 0 && totalSize > doneBytes ? Math.round((totalSize - doneBytes) / groupSpeed) : 0
+            // Parts not started yet are estimated (see lib/progress.ts).
+            const { totalBytes: totalSize, percent, speed: groupSpeed, etaSeconds, estimated } = packageProgress(group.items)
             const doneCount = group.items.filter((i) => i.state === 'done').length
             const has = (s: ItemState) => group.items.some((i) => i.state === s)
             const stop = (e: { stopPropagation: () => void }) => e.stopPropagation()
@@ -697,13 +692,14 @@ export function QueuePage({
                     <i className="ti ti-folder" />
                     <span className="pkg-name">{group.name}</span>
                     <span className="pkg-meta mono">
-                      {doneCount}/{group.items.length} file{group.items.length === 1 ? '' : 's'} · {formatBytes(totalSize)}
+                      {doneCount}/{group.items.length} file{group.items.length === 1 ? '' : 's'} · {estimated ? '~' : ''}
+                      {formatBytes(totalSize)}
                       {groupSpeed > 0 && ` · ${formatSpeed(groupSpeed)}`}
                       {etaSeconds > 0 && ` · ETA ${formatCountdown(etaSeconds)}`}
                       {isFinished && ` · finished ${formatFinished(finishedAt(group.items))}`}
                       {isFinished && pkgId && ` · ${packagesById.get(pkgId)?.path || group.name}/`}
                     </span>
-                    {totalSize > 0 && (
+                    {(totalSize > 0 || doneCount > 0) && (
                       <span className="pkg-progress" title={`${Math.round(percent)}%`}>
                         <span className={`progress-fill state-${state}`} style={{ width: `${percent}%` }} />
                       </span>
