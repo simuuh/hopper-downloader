@@ -5,7 +5,7 @@ import { ItemRow } from '../components/ItemRow'
 import { PageHeader } from '../components/Page'
 import { api, ApiError, setToken, tokenNearExpiry } from '../lib/api'
 import { formatBytes, formatCountdown, formatSpeed, itemName } from '../lib/format'
-import { groupKeyOf, sortQueue } from '../lib/order'
+import { finishedLast, groupKeyOf, sortQueue } from '../lib/order'
 import type { ItemState, Package, PackageAction, QueueItem } from '../lib/types'
 
 type Action = 'pause' | 'resume' | 'retry' | 'cancel'
@@ -129,7 +129,8 @@ export function QueuePage({
   }, [items])
 
   // Shown in start order (see lib/order.ts): top to bottom is the order
-  // the dispatcher starts downloads in.
+  // the dispatcher starts downloads in. In "All", finished packages follow
+  // the ones still in progress.
   const filteredItems = useMemo(() => {
     const items = sortedItems
     switch (filter) {
@@ -140,7 +141,7 @@ export function QueuePage({
       case 'errors':
         return items.filter((i) => i.state === 'error')
       default:
-        return items
+        return finishedLast(items, finishedKeys)
     }
   }, [sortedItems, filter, finishedKeys])
 

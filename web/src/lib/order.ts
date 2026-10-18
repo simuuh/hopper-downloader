@@ -60,3 +60,16 @@ export function sortQueue(items: QueueItem[]): QueueItem[] {
     return a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0
   })
 }
+
+// finishedLast moves the items of finished groups (finishedKeys, by
+// groupKeyOf) below all others, keeping the order within both parts.
+// Display only: finished packages start nothing, so the dispatcher's order
+// above is unaffected — but downloads still in progress stay at the top
+// instead of below everything that finished earlier.
+export function finishedLast(items: QueueItem[], finishedKeys: Set<string>): QueueItem[] {
+  if (finishedKeys.size === 0) return items
+  const open: QueueItem[] = []
+  const finished: QueueItem[] = []
+  for (const it of items) (finishedKeys.has(groupKeyOf(it)) ? finished : open).push(it)
+  return [...open, ...finished]
+}
