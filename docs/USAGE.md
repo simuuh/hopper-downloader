@@ -16,8 +16,8 @@
 | Phone | Share the link to Hopper — see below. |
 | API | `POST /api/v1/links/bulk` — see [API.md](API.md). |
 
-`.dlc` / `.txt` imports start right away; turn off "Start imported links
-immediately" in Settings to add them paused for review first.
+`.dlc` / `.txt` imports start right away; turn off "Start imported .dlc/.txt
+links immediately" in Settings to add them paused for review first.
 
 Click'n'Load links are always added paused, regardless of that setting —
 any web page you open could send links to the Click'n'Load listener, so

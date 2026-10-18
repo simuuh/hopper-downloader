@@ -215,7 +215,7 @@ export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
             checked={settings.auto_start_imports}
             onChange={(e) => update('auto_start_imports', e.target.checked)}
           />
-          Start imported links immediately (DLC, Click&apos;n&apos;Load) instead of adding them paused
+          Start imported .dlc/.txt links immediately instead of adding them paused (Click&apos;n&apos;Load links always arrive paused)
         </label>
       </div>
 
