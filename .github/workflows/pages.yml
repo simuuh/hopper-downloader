@@ -1,0 +1,50 @@
+name: Pages
+
+# Publishes the landing page (site/) to GitHub Pages. Logo and screenshot
+# are taken from docs/assets at build time, so README and page always
+# show the same images. Requires Settings → Pages → Source: "GitHub
+# Actions" once.
+on:
+  push:
+    branches: [main]
+    paths: ['site/**', 'docs/assets/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer push replaces a queued one, but a
+# running deployment is allowed to finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/configure-pages@v5
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp site/* _site/
+          cp docs/assets/logo.svg docs/assets/screenshot-queue.png _site/
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

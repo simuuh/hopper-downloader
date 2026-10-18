@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hopper – self-hosted download manager</title>
+<meta name="description" content="Privacy-first, self-hosted download manager for one-click hosters. Click'n'Load and DLC like JDownloader, built to run headless on a NAS. One Go binary or one container, no telemetry.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0d10">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<meta property="og:title" content="hopper – self-hosted download manager">
+<meta property="og:description" content="Click'n'Load and DLC like JDownloader, built to run headless on a NAS. No telemetry.">
+<meta property="og:image" content="https://simuuh.github.io/hopper-downloader/screenshot-queue.png">
+<style>
+  /* Colors, type and spacing from docs/BRAND.md — the page looks like the app. */
+  :root {
+    --bg-0: #0b0d10;
+    --bg-1: #14171b;
+    --bg-2: #1b1f24;
+    --bg-3: #23282f;
+    --border: #2c323a;
+    --text: #d5dae0;
+    --text-dim: #8892a0;
+    --text-faint: #5b6472;
+    --accent: #4da3ff;
+    --accent-dim: #2a5c8a;
+    /* State colors appear only on download states, never as decoration. */
+    --state-queued: #8892a0;
+    --state-downloading: #4da3ff;
+    --state-paused: #d8a94d;
+    --state-done: #4caf6f;
+    --state-error: #e0555a;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    --radius: 3px;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg-0); }
+  body {
+    margin: 0;
+    background: var(--bg-0);
+    color: var(--text);
+    font: 15px/1.55 var(--sans);
+    -webkit-text-size-adjust: 100%;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre, .mono { font-family: var(--mono); }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+
+  /* Top bar, as in the Web UI */
+  .bar { border-bottom: 1px solid var(--border); background: var(--bg-0); }
+  .bar .wrap { display: flex; align-items: center; gap: 18px; height: 52px; }
+  .wordmark { display: flex; align-items: center; gap: 10px; color: var(--text); font: 600 16px/1 var(--mono); letter-spacing: 0.02em; }
+  .wordmark img { width: 24px; height: 24px; }
+  .wordmark:hover { text-decoration: none; }
+  .bar nav { display: flex; gap: 18px; margin-left: auto; font-size: 14px; }
+  .bar nav a { color: var(--text-dim); }
+  .bar nav a:hover { color: var(--text); text-decoration: none; }
+
+  /* Intro */
+  .intro { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 36px; padding: 40px 0 22px; align-items: start; }
+  h1 { margin: 0 0 12px; font-size: 30px; line-height: 1.2; font-weight: 600; letter-spacing: -0.01em; }
+  .lede { margin: 0 0 14px; color: var(--text-dim); font-size: 16px; }
+  .facts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; padding: 0; list-style: none; font: 12px/1.6 var(--mono); color: var(--text-faint); }
+  .facts li::before { content: "· "; color: var(--border); }
+  .facts li:first-child::before { content: ""; }
+
+  .label { margin: 0 0 8px; font: 11px/1.4 var(--sans); text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); }
+  .term { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius); }
+  .term-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 8px 6px 14px; border-bottom: 1px solid var(--border); }
+  .term-head .label { margin: 0; }
+  .term pre { margin: 0; padding: 12px 14px; font-size: 13px; line-height: 1.7; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .term .c { color: var(--text-faint); }
+  .term .p { color: var(--text-faint); user-select: none; }
+  .copy {
+    padding: 3px 8px; font: 12px var(--sans); color: var(--text-dim);
+    background: var(--bg-3); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer;
+  }
+  .copy:hover { color: var(--text); border-color: var(--accent-dim); }
+  .after { margin: 10px 0 0; font-size: 13px; color: var(--text-dim); }
+
+  /* Screenshot */
+  .shot { margin: 22px 0 0; padding: 0; }
+  .shot img { display: block; width: 100%; height: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+  .shot figcaption { margin-top: 8px; font-size: 13px; color: var(--text-faint); }
+
+  section { padding: 34px 0 6px; }
+  h2 { margin: 0 0 14px; font-size: 11px; font-weight: 400; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); }
+  h3 { margin: 0 0 4px; font-size: 15px; font-weight: 500; }
+
+  /* Spec sheet */
+  .spec { width: 100%; border-collapse: collapse; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-1); font-size: 14px; }
+  .spec th, .spec td { padding: 9px 12px; border-top: 1px solid var(--border); text-align: left; vertical-align: top; }
+  .spec tr:first-child th, .spec tr:first-child td { border-top: 0; }
+  .spec th { width: 180px; font-weight: 400; color: var(--text-dim); white-space: nowrap; }
+  .spec td .mono { font-size: 13px; }
+
+  /* How links travel */
+  .flow { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 28px; align-items: center; }
+  .flow svg { width: 100%; height: auto; display: block; }
+  .flow p { margin: 0 0 10px; color: var(--text-dim); font-size: 14px; }
+  .flow p strong { color: var(--text); font-weight: 500; }
+
+  /* Package row, as in the queue */
+  .pkg { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-1); font-size: 13px; }
+  .row { display: grid; grid-template-columns: minmax(0, 1fr) 150px 92px; gap: 14px; align-items: center; padding: 9px 12px; border-top: 1px solid var(--border); }
+  .row:first-child { border-top: 0; background: var(--bg-2); }
+  .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { display: block; font: 11px/1.5 var(--mono); color: var(--text-faint); font-weight: 400; }
+  .prog { height: 4px; background: var(--bg-3); border-radius: 2px; overflow: hidden; }
+  .prog i { display: block; height: 100%; }
+  .num { margin-top: 4px; font: 11px var(--mono); color: var(--text-faint); }
+  .pill { justify-self: end; padding: 2px 8px; border: 1px solid currentColor; border-radius: 10px; font: 11px var(--mono); }
+  .s-done { color: var(--state-done); }        .f-done { background: var(--state-done); }
+  .s-downloading { color: var(--state-downloading); } .f-downloading { background: var(--state-downloading); }
+  .s-paused { color: var(--state-paused); }    .f-paused { background: var(--state-paused); }
+  .s-queued { color: var(--state-queued); }    .f-queued { background: var(--state-queued); }
+  .pkgnote { margin: 10px 0 0; font-size: 13px; color: var(--text-dim); }
+
+  /* Two-column lists */
+  .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 36px; }
+  .cols div p { margin: 0; color: var(--text-dim); font-size: 14px; }
+  .not { margin: 0; padding: 0; list-style: none; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-1); }
+  .not li { padding: 10px 12px; border-top: 1px solid var(--border); font-size: 14px; color: var(--text-dim); }
+  .not li:first-child { border-top: 0; }
+  .not li b { color: var(--text); font-weight: 500; }
+
+  .docs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .docs a { display: block; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-1); color: var(--text); font-size: 14px; }
+  .docs a:hover { border-color: var(--accent-dim); text-decoration: none; }
+  .docs a span { display: block; color: var(--text-faint); font-size: 12px; }
+
+  footer { margin-top: 40px; border-top: 1px solid var(--border); }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 18px 20px 28px; font-size: 13px; color: var(--text-faint); }
+  footer .wrap span:last-child { margin-left: auto; }
+
+  @media (max-width: 820px) {
+    .intro, .flow, .cols { grid-template-columns: minmax(0, 1fr); }
+    .docs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .intro { padding-top: 28px; gap: 24px; }
+    h1 { font-size: 25px; }
+    .spec th { width: 120px; white-space: normal; }
+    footer .wrap span:last-child { margin-left: 0; }
+  }
+  @media (max-width: 520px) {
+    .wrap { padding: 0 16px; }
+    .bar nav a.opt { display: none; }
+    .docs { grid-template-columns: minmax(0, 1fr); }
+    .row { grid-template-columns: minmax(0, 1fr) 80px; }
+    .row .pill { display: none; }
+    .spec th, .spec td { display: block; width: auto; }
+    .spec td { border-top: 0; padding-top: 0; }
+  }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="wordmark" href="./"><img src="logo.svg" alt="" width="24" height="24">hopper</a>
+    <nav>
+      <a class="opt" href="#install">Install</a>
+      <a class="opt" href="https://github.com/simuuh/hopper-downloader/tree/main/docs">Docs</a>
+      <a href="https://github.com/simuuh/hopper-downloader/releases/latest">Releases</a>
+      <a href="https://github.com/simuuh/hopper-downloader">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <div class="intro">
+    <h1>A download manager for one-click hosters that lives on your NAS.</h1>
+    <div>
+      <p class="lede">Click'n'Load and DLC containers like JDownloader, but headless from the start: one container or one Go binary, a web UI instead of a desktop app, and a browser extension that sends links from your PC to the server.</p>
+      <ul class="facts">
+        <li>MIT</li><li>Go, no CGO</li><li>amd64 + arm64</li><li>no telemetry</li><li>single bbolt file</li>
+      </ul>
+    </div>
+  </div>
+
+  <div id="install">
+    <div class="term">
+      <div class="term-head">
+        <p class="label">Docker Compose, no checkout needed</p>
+        <button class="copy" type="button" data-copy="install" hidden>Copy</button>
+      </div>
+<pre id="install-cmd"><span class="p">$ </span>mkdir hopper &amp;&amp; cd hopper
+<span class="p">$ </span>curl -fsSLO https://raw.githubusercontent.com/simuuh/hopper-downloader/main/docker-compose.yml
+<span class="p">$ </span>curl -fsSLo .env https://raw.githubusercontent.com/simuuh/hopper-downloader/main/.env.example
+<span class="p">$ </span>docker compose up -d
+<span class="p">$ </span>docker compose logs hopperd   <span class="c"># prints the admin password once</span></pre>
+    </div>
+    <p class="after">Then open <code>http://&lt;host&gt;:9667</code>. Settings go into <code>.env</code>; update with <code>docker compose pull &amp;&amp; docker compose up -d</code>. Binaries for Linux, macOS and Windows are on the <a href="https://github.com/simuuh/hopper-downloader/releases/latest">release page</a>.</p>
+  </div>
+
+  <figure class="shot">
+    <img src="screenshot-queue.png" width="2560" height="1440" alt="Hopper's queue: downloads grouped into one package per release, with per-file progress, speed and state." loading="lazy">
+    <figcaption>The queue. One package per release, parts in order, progress and state per file.</figcaption>
+  </figure>
+
+  <section>
+    <h2>What it does</h2>
+    <table class="spec">
+      <tr><th>Links in</th><td>Click'n'Load 2 (filecrypt, hide.cx, …), <span class="mono">.dlc</span> and <span class="mono">.txt</span> import, pasted text, sharing from a phone, REST API</td></tr>
+      <tr><th>Hosters</th><td>Real-Debrid, AllDebrid, Debrid-Link and Premiumize with a priority order: if the first can't serve a link, the next one takes it. Native plugins for Rapidgator, 1fichier, Katfile and DDownload.</td></tr>
+      <tr><th>Accounts</th><td>Several per hoster, rotated automatically when one runs out of traffic. Credentials encrypted at rest (AES-256-GCM).</td></tr>
+      <tr><th>Downloads</th><td>Parallel chunks, resumable after a restart. A resumed file must still be the same version on the server (<span class="mono">ETag</span> / <span class="mono">If-Range</span>), and a file is only marked done when every byte arrived.</td></tr>
+      <tr><th>Packages</th><td>Archive parts grouped per release; later parts merge into the existing package; duplicates and mirrors are skipped.</td></tr>
+      <tr><th>Extraction</th><td>RAR (multi-part, password list), ZIP, tar. Automatic once every part is on disk, or on request.</td></tr>
+      <tr><th>Notifications</th><td>Webhook or ntfy when a package is finished.</td></tr>
+      <tr><th>Runs on</th><td>Docker (amd64, arm64) or a single binary for Linux, macOS, Windows. Web UI embedded, CLI client <span class="mono">hopperctl</span> included.</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>How links get from the browser to the NAS</h2>
+    <div class="flow">
+      <svg viewBox="0 0 640 230" role="img" aria-labelledby="flow-title">
+        <title id="flow-title">A hoster page in the browser hands links to the Hopper extension, which forwards them to hopperd on the NAS; hopperd downloads through the debrid service into the downloads folder.</title>
+        <defs>
+          <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L8 4 L0 8 z" fill="#4da3ff"/>
+          </marker>
+        </defs>
+        <g font-family="SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace" font-size="12">
+          <rect x="1" y="1" width="250" height="168" rx="3" fill="none" stroke="#2c323a" stroke-dasharray="3 3"/>
+          <text x="12" y="20" fill="#5b6472">your PC</text>
+          <rect x="16" y="34" width="220" height="44" rx="3" fill="#14171b" stroke="#2c323a"/>
+          <text x="28" y="54" fill="#d5dae0">browser</text>
+          <text x="28" y="69" fill="#5b6472">hoster page · CnL button</text>
+          <rect x="16" y="108" width="220" height="44" rx="3" fill="#14171b" stroke="#2c323a"/>
+          <text x="28" y="128" fill="#d5dae0">hopper extension</text>
+          <text x="28" y="143" fill="#5b6472">or hopperctl proxy</text>
+          <line x1="126" y1="78" x2="126" y2="104" stroke="#4da3ff" stroke-width="1.5" marker-end="url(#arr)"/>
+
+          <rect x="345" y="1" width="294" height="228" rx="3" fill="none" stroke="#2c323a" stroke-dasharray="3 3"/>
+          <text x="356" y="20" fill="#5b6472">NAS / server</text>
+          <rect x="360" y="34" width="264" height="60" rx="3" fill="#14171b" stroke="#2a5c8a"/>
+          <text x="372" y="56" fill="#d5dae0">hopperd</text>
+          <text x="372" y="72" fill="#5b6472">:9666 Click'n'Load</text>
+          <text x="372" y="86" fill="#5b6472">:9667 web UI · API · .dlc</text>
+          <rect x="360" y="168" width="264" height="44" rx="3" fill="#14171b" stroke="#2c323a"/>
+          <text x="372" y="188" fill="#d5dae0">/downloads</text>
+          <text x="372" y="203" fill="#5b6472">extracted, grouped per release</text>
+          <line x1="236" y1="130" x2="300" y2="130" stroke="#4da3ff" stroke-width="1.5"/>
+          <polyline points="300,130 300,64 356,64" fill="none" stroke="#4da3ff" stroke-width="1.5" marker-end="url(#arr)"/>
+          <line x1="492" y1="94" x2="492" y2="164" stroke="#4da3ff" stroke-width="1.5" marker-end="url(#arr)"/>
+          <text x="500" y="126" fill="#5b6472">debrid /</text>
+          <text x="500" y="141" fill="#5b6472">hoster API</text>
+        </g>
+      </svg>
+      <div>
+        <p><strong>Click'n'Load buttons</strong> on link-protector sites always talk to <code>127.0.0.1:9666</code>, the PC you're sitting at. The extension catches that call inside the page and forwards it to hopperd on the server, so nothing has to run on your PC.</p>
+        <p><strong>Links from a page arrive paused.</strong> Any website could send links to that port; downloads start only when you start them in the web UI.</p>
+        <p><strong>.dlc files</strong> downloaded in the browser are imported directly. Details in <a href="https://github.com/simuuh/hopper-downloader/blob/main/docs/REMOTE_CLICKNLOAD.md">REMOTE_CLICKNLOAD.md</a>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>One release, one package</h2>
+    <div class="pkg" aria-label="Example package in the queue">
+      <div class="row">
+        <span class="name">Big.Buck.Bunny.2008.2160p<span class="meta">4 files · 1.5 GB · 2 done</span></span>
+        <div><div class="prog"><i class="f-downloading" style="width:58%"></i></div><div class="num">880 MB / 1.5 GB</div></div>
+        <span class="pill s-downloading">downloading</span>
+      </div>
+      <div class="row">
+        <span class="name">Big.Buck.Bunny.2008.2160p.part1.rar<span class="meta">realdebrid · 380.0 MB</span></span>
+        <div><div class="prog"><i class="f-done" style="width:100%"></i></div><div class="num">380.0 MB · 100%</div></div>
+        <span class="pill s-done">done</span>
+      </div>
+      <div class="row">
+        <span class="name">Big.Buck.Bunny.2008.2160p.part2.rar<span class="meta">realdebrid · 380.0 MB</span></span>
+        <div><div class="prog"><i class="f-done" style="width:100%"></i></div><div class="num">380.0 MB · 100%</div></div>
+        <span class="pill s-done">done</span>
+      </div>
+      <div class="row">
+        <span class="name">Big.Buck.Bunny.2008.2160p.part3.rar<span class="meta">realdebrid · 380.0 MB · 24.0 MB/s</span></span>
+        <div><div class="prog"><i class="f-downloading" style="width:33%"></i></div><div class="num">124.5 MB · 33%</div></div>
+        <span class="pill s-downloading">downloading</span>
+      </div>
+      <div class="row">
+        <span class="name">Big.Buck.Bunny.2008.2160p.part4.rar<span class="meta">added later via Click'n'Load</span></span>
+        <div><div class="prog"><i class="f-paused" style="width:0%"></i></div><div class="num">0 B · 0%</div></div>
+        <span class="pill s-paused">ready</span>
+      </div>
+    </div>
+    <p class="pkgnote">Parts download in order and are extracted once the last one is on disk. If something stays packed, hopperd's log says why.</p>
+  </section>
+
+  <section>
+    <h2>What Hopper deliberately doesn't do</h2>
+    <ul class="not">
+      <li><b>No captcha-solving services, no router reconnects.</b> Use a debrid account instead of waiting out free-tier limits.</li>
+      <li><b>No plugins for hundreds of hosters and video sites.</b> A debrid account covers most hosters; a few native plugins cover the rest.</li>
+      <li><b>No multiple users.</b> One admin, one queue.</li>
+      <li><b>No library management.</b> Sorting finished downloads into movies and series is <a href="https://github.com/simuuh/folder-mover">Folder Mover</a>'s job.</li>
+      <li><b>No phoning home.</b> The only fixed outbound call is the DLC key exchange with <span class="mono">service.jdownloader.org</span> when you import a <span class="mono">.dlc</span>.</li>
+    </ul>
+    <p class="pkgnote">If you need those things, JDownloader is the better tool.</p>
+  </section>
+
+  <section>
+    <h2>Documentation</h2>
+    <nav class="docs">
+      <a href="https://github.com/simuuh/hopper-downloader/blob/main/docs/INSTALL.md">INSTALL<span>Docker, from source, configuration</span></a>
+      <a href="https://github.com/simuuh/hopper-downloader/blob/main/docs/USAGE.md">USAGE<span>Links, packages, accounts, notifications</span></a>
+      <a href="https://github.com/simuuh/hopper-downloader/blob/main/docs/REMOTE_CLICKNLOAD.md">REMOTE_CLICKNLOAD<span>Extension and hopperctl for a NAS</span></a>
+      <a href="https://github.com/simuuh/hopper-downloader/blob/main/docs/TROUBLESHOOTING.md">TROUBLESHOOTING<span>Symptoms and fixes</span></a>
+      <a href="https://github.com/simuuh/hopper-downloader/blob/main/docs/API.md">API<span>REST API and OpenAPI spec</span></a>
+      <a href="https://github.com/simuuh/hopper-downloader/blob/main/docs/ARCHITECTURE.md">ARCHITECTURE<span>How it's built and why</span></a>
+    </nav>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>hopper · MIT license</span>
+    <a href="https://github.com/simuuh/hopper-downloader">Source</a>
+    <a href="https://github.com/simuuh/hopper-downloader/blob/main/SECURITY.md">Security</a>
+    <span>This page sets no cookies and loads nothing from third parties.</span>
+  </div>
+</footer>
+
+<script>
+  // Copy button for the install commands: without the "$ " prompts and comments.
+  (function () {
+    var btn = document.querySelector('[data-copy="install"]');
+    var pre = document.getElementById('install-cmd');
+    if (!btn || !pre || !navigator.clipboard) return;
+    btn.hidden = false;
+    btn.addEventListener('click', function () {
+      var text = pre.innerText.split('\n').map(function (line) {
+        return line.replace(/^\$ /, '').replace(/\s+#.*$/, '');
+      }).join('\n');
+      navigator.clipboard.writeText(text).then(function () {
+        btn.textContent = 'Copied';
+        setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
+      });
+    });
+  })();
+</script>
+</body>
+</html>
