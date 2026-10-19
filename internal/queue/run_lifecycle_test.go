@@ -155,9 +155,7 @@ func (panickingHoster) Name() string      { return "panicking" }
 func (panickingHoster) Domains() []string { return nil }
 func (panickingHoster) Match(string) bool { return true }
 func (panickingHoster) Resolve(string, *plugins.Account) (*plugins.FileInfo, error) {
-	var parts []string
-	_ = parts[1]
-	return nil, nil
+	panic("unexpected response shape")
 }
 func (panickingHoster) FetchDownloadURL(url string, _ *plugins.Account) (string, error) {
 	return url, nil

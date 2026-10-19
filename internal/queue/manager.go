@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strings"
@@ -723,6 +724,15 @@ func (m *Manager) run(it *Item, h *runHandle) {
 			delete(m.active, it.ID)
 		}
 		m.activeMu.Unlock()
+	}()
+	// A bug in a plugin (or in parsing a hoster's response) fails this
+	// item instead of crashing the daemon and every other download.
+	// Registered last so it runs before the cleanup above.
+	defer func() {
+		if r := recover(); r != nil {
+			m.log.Error("queue: download run panicked", "item_id", it.ID, "hoster", it.HosterKey, "panic", r, "stack", string(debug.Stack()))
+			m.finishWithIntentCheck(h, it.ID, func() { m.fail(it.ID, fmt.Sprintf("internal error: %v", r)) })
+		}
 	}()
 
 	hoster, ok := m.matchHoster(it.URL)
