@@ -2,6 +2,8 @@ package queue
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -96,4 +98,50 @@ func TestRun_ResumeWhileOldRunHangs_StartsNoSecondRun(t *testing.T) {
 
 	h.unblock()
 	waitForState(t, mgr, it.ID, StateDone, 3*time.Second)
+}
+
+// hangingDownloadServer answers HEAD normally and holds every GET open
+// until the client goes away, signalling gotGET when one arrives.
+func hangingDownloadServer(t *testing.T) (*httptest.Server, <-chan struct{}) {
+	t.Helper()
+	gotGET := make(chan struct{}, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1024")
+		if r.Method == http.MethodHead {
+			return
+		}
+		gotGET <- struct{}{}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	return srv, gotGET
+}
+
+// On SIGTERM hopperd's signal context is cancelled before
+// Manager.Shutdown runs, so in-flight downloads end with "context
+// canceled" before any intent is recorded. That is a shutdown, not a
+// failure: the item must go back to the queue as it was, without using
+// up an automatic retry or waiting out a retry delay (H3).
+func TestShutdown_CancelledRunContextIsNotAFailure(t *testing.T) {
+	srv, gotGET := hangingDownloadServer(t)
+	store := newTestStore(t)
+	mgr, _ := newTestManager(t, store, Config{ParallelFiles: 1, PollInterval: 10 * time.Millisecond, AutoRetry: 3, AutoRetryDelay: time.Hour})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	mgr.Start(ctx)
+	it, err := mgr.AddLink(srv.URL+"/f.bin", AddOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-gotGET:
+	case <-time.After(3 * time.Second):
+		t.Fatal("download never started")
+	}
+
+	cancel() // the signal context, before Shutdown
+	got := waitForState(t, mgr, it.ID, StateQueued, 3*time.Second)
+	if got.Attempts != 0 || got.RetryAfter != nil || got.Error != "" {
+		t.Fatalf("after shutdown: Attempts=%d RetryAfter=%v Error=%q, want an untouched queued item", got.Attempts, got.RetryAfter, got.Error)
+	}
 }
