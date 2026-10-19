@@ -7,7 +7,7 @@ import { NARROW_SCREEN, useMediaQuery } from '../hooks/useMediaQuery'
 import { literalText } from '../lib/inputProps'
 import { api, ApiError, setToken, tokenNearExpiry } from '../lib/api'
 import { formatBytes, formatCountdown, formatSpeed, itemName } from '../lib/format'
-import { finishedLast, groupKeyOf, sortQueue } from '../lib/order'
+import { finishedLast, groupCount, groupKeyOf, sortQueue } from '../lib/order'
 import { packageProgress } from '../lib/progress'
 import type { ItemState, Package, PackageAction, QueueItem } from '../lib/types'
 
@@ -134,31 +134,34 @@ export function QueuePage({
     return new Set([...all].filter((k) => !unfinished.has(k)))
   }, [items])
 
+  const matches = useMemo<Record<Filter, (i: QueueItem) => boolean>>(
+    () => ({
+      all: () => true,
+      active: (i) => ACTIVE_STATES.includes(i.state),
+      done: (i) => finishedKeys.has(groupKeyOf(i)),
+      errors: (i) => i.state === 'error',
+    }),
+    [finishedKeys],
+  )
+
   // Shown in start order (see lib/order.ts): top to bottom is the order
   // the dispatcher starts downloads in. In "All", finished packages follow
   // the ones still in progress.
   const filteredItems = useMemo(() => {
-    const items = sortedItems
-    switch (filter) {
-      case 'active':
-        return items.filter((i) => ACTIVE_STATES.includes(i.state))
-      case 'done':
-        return items.filter((i) => finishedKeys.has(groupKeyOf(i)))
-      case 'errors':
-        return items.filter((i) => i.state === 'error')
-      default:
-        return finishedLast(items, finishedKeys)
-    }
-  }, [sortedItems, filter, finishedKeys])
+    if (filter === 'all') return finishedLast(sortedItems, finishedKeys)
+    return sortedItems.filter(matches[filter])
+  }, [sortedItems, filter, finishedKeys, matches])
 
+  // A tab counts the packages it lists, like the rows it shows; file
+  // counts are in the stat cards above and in each package header.
   const filterCounts = useMemo<Record<Filter, number>>(
     () => ({
-      all: items.length,
-      active: items.filter((i) => ACTIVE_STATES.includes(i.state)).length,
-      done: finishedKeys.size,
-      errors: items.filter((i) => i.state === 'error').length,
+      all: groupCount(items),
+      active: groupCount(items.filter(matches.active)),
+      done: groupCount(items.filter(matches.done)),
+      errors: groupCount(items.filter(matches.errors)),
     }),
-    [items, finishedKeys],
+    [items, matches],
   )
 
   const allSelected = filteredItems.length > 0 && selected.size === filteredItems.length
