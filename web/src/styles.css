@@ -180,6 +180,41 @@ a {
   margin-left: 6px;
 }
 
+/* A newer release exists: a small accent dot next to the version that
+   pulses a few times when it appears, then stays still. */
+.update-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: none;
+  vertical-align: middle;
+  animation: update-pulse 1.6s ease-out 3;
+}
+.update-badge:hover {
+  background: var(--accent-hover);
+}
+@keyframes update-pulse {
+  from {
+    box-shadow: 0 0 0 0 var(--accent);
+  }
+  to {
+    box-shadow: 0 0 0 7px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .update-badge {
+    animation: none;
+  }
+}
+
 .nav {
   display: flex;
   gap: 2px;
@@ -439,6 +474,9 @@ button.btn.small {
 }
 .ti-archive::before {
   content: '▧';
+}
+.ti-arrow-up::before {
+  content: '↑';
 }
 
 /* ---- queue: top bar / stats ---- */
@@ -1572,6 +1610,11 @@ button.stat-period.stat-period-tab.active {
   .icon-btn {
     width: 40px;
     height: 40px;
+  }
+  .update-badge {
+    width: 24px;
+    height: 24px;
+    font-size: 14px;
   }
   .nav button,
   .filter-tab,

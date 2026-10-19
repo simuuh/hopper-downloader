@@ -31,6 +31,7 @@ import (
 	"github.com/simuuh/hopper-downloader/internal/scheduler"
 	"github.com/simuuh/hopper-downloader/internal/settings"
 	"github.com/simuuh/hopper-downloader/internal/stats"
+	"github.com/simuuh/hopper-downloader/internal/update"
 	"github.com/simuuh/hopper-downloader/plugins"
 	"github.com/simuuh/hopper-downloader/plugins/alldebrid"
 	"github.com/simuuh/hopper-downloader/plugins/ddownload"
@@ -300,6 +301,28 @@ func run() error {
 	}()
 	sched.Every(ctx, accountRevalidateInterval, func(ctx context.Context) { accounts.RevalidateAll(ctx, registry.All()) })
 
+	// The daily update check runs only while the user has it turned on
+	// (settings.UpdateCheck, off by default): once shortly after startup
+	// (the result is only kept in memory), then whenever the hourly tick
+	// finds the last check older than updateCheckInterval — so turning it
+	// on takes effect within the hour. The Web UI's "Check now" goes
+	// through the API instead.
+	updates := update.New(version, update.DefaultURL, nil, log.With("component", "update"))
+	checkUpdates := func(ctx context.Context) {
+		if settingsMgr.Get().UpdateCheck {
+			updates.CheckIfDue(ctx, updateCheckInterval)
+		}
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Minute):
+		}
+		checkUpdates(ctx)
+	}()
+	sched.Every(ctx, time.Hour, checkUpdates)
+
 	webFS, err := fs.Sub(web.DistFS, "dist")
 	if err != nil {
 		return fmt.Errorf("mount embedded web ui: %w", err)
@@ -321,6 +344,7 @@ func run() error {
 		ConfigView:         redactedConfigView(cfg),
 		Version:            version,
 		Notifier:           notifier,
+		Updates:            updates,
 	}, queueMgr, accounts, registry, settingsMgr, statsTracker, &http.Client{Timeout: 30 * time.Second}, webFS, log.With("component", "api"))
 
 	var cnlSrv *clicknload.Server
@@ -479,6 +503,10 @@ func newLogger(cfg config.LoggingConfig) (*slog.Logger, *slog.LevelVar, error) {
 // accountRevalidateInterval is how often every enabled hoster account is
 // re-validated in the background (see account.Manager.RevalidateAll).
 const accountRevalidateInterval = 12 * time.Hour
+
+// updateCheckInterval is how often the opt-in update check asks GitHub
+// for the latest release.
+const updateCheckInterval = 24 * time.Hour
 
 // announceGeneratedPassword prints the generated first-start admin
 // password as a plain, easy-to-find block (docker compose logs hopperd).

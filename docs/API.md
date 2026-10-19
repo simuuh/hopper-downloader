@@ -59,7 +59,7 @@ alongside it, not a silent change to `/api/v1`.
 | Queue | `GET /queue`, `GET /queue/{id}`, `PUT /queue/order`, `POST /queue/{id}/{pause,resume,retry,extract,captcha}`, `DELETE /queue/{id}` |
 | Accounts | `GET /accounts`, `POST /accounts`, `PUT /accounts/{id}` (replace credentials, re-validates), `POST /accounts/{id}/enabled`, `POST /accounts/{id}/validate`, `DELETE /accounts/{id}` |
 | Plugins | `GET /plugins` — credentialed hosters in account priority order (`rank`, 1 = first) incl. `premium_url` (buy/extend premium; `is_referral` marks the developer referral link, see `accounts.referral_links`) |
-| Settings | `GET /settings`, `POST /settings` (partial update; `account_priority` = plugin keys, most preferred first, `[]` = default order) |
+| Settings | `GET /settings`, `POST /settings` (partial update; `account_priority` = plugin keys, most preferred first, `[]` = default order; `update_check` = daily release check, off by default) |
 | Config | `GET /config` (read-only, redacted) |
 | Stats | `GET /stats` |
 | Import | `POST /import` (multipart, one or more `.dlc`/`.txt` files; grouped + de-duplicated) |
@@ -67,6 +67,7 @@ alongside it, not a silent change to `/api/v1`.
 | Packages | `PATCH /packages/{id}` (name, path), `POST /packages/{id}/links` (add links to it), `POST /packages/{id}/{pause,resume,retry}`, `DELETE /packages/{id}` |
 | Queue item edit | `PATCH /queue/{id}` (`priority`; `url`/`filename` while queued, paused or failed) |
 | Notifications | `GET /notify` (configured?), `POST /notify/test` |
+| Updates | `GET /update` (last check result, cached), `POST /update/check` (check GitHub now; at most once a minute) |
 | Bulk add | `POST /links/bulk` (free text with URLs; grouped per release, merged, de-duplicated) |
 
 Queue item states: `queued → downloading → done`, with `paused` and

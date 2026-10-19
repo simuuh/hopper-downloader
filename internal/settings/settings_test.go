@@ -328,3 +328,25 @@ func TestApply_AccountPriority(t *testing.T) {
 		t.Errorf("clearing: %v, %v", got.AccountPriority, err)
 	}
 }
+
+func TestUpdateCheck_OffByDefaultAndPersisted(t *testing.T) {
+	db := newTestDB(t)
+	m, err := New(db, defaultInitial(), Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Get().UpdateCheck {
+		t.Fatal("UpdateCheck must be off unless the user turns it on")
+	}
+	on := true
+	if _, err := m.Apply(Update{UpdateCheck: &on}); err != nil {
+		t.Fatal(err)
+	}
+	m2, err := New(db, defaultInitial(), Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m2.Get().UpdateCheck {
+		t.Error("UpdateCheck not persisted across restart")
+	}
+}

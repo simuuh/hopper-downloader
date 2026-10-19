@@ -181,6 +181,19 @@ export interface Settings {
   extract_passwords: string[]
   // Plugin keys, most preferred first; [] = default order.
   account_priority: string[]
+  // Daily check for a newer release on GitHub; off by default.
+  update_check: boolean
+}
+
+// UpdateStatus mirrors internal/update.Status: the last update check's
+// result, cached by hopperd.
+export interface UpdateStatus {
+  current: string
+  latest?: string
+  available: boolean
+  release_url?: string
+  checked_at?: string
+  error?: string
 }
 
 // SettingsUpdate mirrors internal/settings.Update: every field is

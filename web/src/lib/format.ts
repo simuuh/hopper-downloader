@@ -39,3 +39,11 @@ export function itemName(item: { filename: string; url: string }): string {
     return item.url
   }
 }
+
+// formatVersion shows a build version with exactly one leading "v":
+// release builds carry the git tag ("v0.9.0"), and a non-numeric version
+// such as "dev" is shown as-is.
+export function formatVersion(version: string): string {
+  const bare = version.replace(/^v/, '')
+  return /^\d/.test(bare) ? `v${bare}` : version
+}
