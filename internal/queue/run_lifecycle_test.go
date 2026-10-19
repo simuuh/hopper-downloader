@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -143,5 +144,42 @@ func TestShutdown_CancelledRunContextIsNotAFailure(t *testing.T) {
 	got := waitForState(t, mgr, it.ID, StateQueued, 3*time.Second)
 	if got.Attempts != 0 || got.RetryAfter != nil || got.Error != "" {
 		t.Fatalf("after shutdown: Attempts=%d RetryAfter=%v Error=%q, want an untouched queued item", got.Attempts, got.RetryAfter, got.Error)
+	}
+}
+
+// panickingHoster stands in for a plugin with a bug, e.g. an index out of
+// range while parsing an unexpected API response.
+type panickingHoster struct{}
+
+func (panickingHoster) Name() string      { return "panicking" }
+func (panickingHoster) Domains() []string { return nil }
+func (panickingHoster) Match(string) bool { return true }
+func (panickingHoster) Resolve(string, *plugins.Account) (*plugins.FileInfo, error) {
+	var parts []string
+	_ = parts[1]
+	return nil, nil
+}
+func (panickingHoster) FetchDownloadURL(url string, _ *plugins.Account) (string, error) {
+	return url, nil
+}
+
+// A panic in one download's plugin call fails that item; it must not take
+// the whole daemon down with it (N8).
+func TestRun_PluginPanicFailsOnlyThatItem(t *testing.T) {
+	mgr := newLifecycleManager(t, panickingHoster{}, Config{ParallelFiles: 1, PollInterval: 10 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+
+	it, err := mgr.AddLink("https://host.example/file.bin", AddOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitForState(t, mgr, it.ID, StateError, 3*time.Second)
+	if !strings.Contains(got.Error, "internal error") {
+		t.Fatalf("Error = %q, want it to name an internal error", got.Error)
+	}
+	if mgr.activeFiles.Load() != 0 {
+		t.Fatalf("activeFiles = %d after the run ended, want its slot freed", mgr.activeFiles.Load())
 	}
 }
