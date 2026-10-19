@@ -10,6 +10,7 @@ import type {
   Settings,
   SettingsUpdate,
   Stats,
+  UpdateStatus,
 } from './types'
 
 const TOKEN_KEY = 'hopper_token'
@@ -182,6 +183,8 @@ export const api = {
   getStats: () => request<Stats>('GET', '/api/v1/stats'),
   getNotifyStatus: () => request<{ enabled: boolean }>('GET', '/api/v1/notify'),
   testNotify: () => request<void>('POST', '/api/v1/notify/test'),
+  getUpdateStatus: () => request<UpdateStatus>('GET', '/api/v1/update'),
+  checkForUpdate: () => request<UpdateStatus>('POST', '/api/v1/update/check'),
 
   importFiles: async (files: File[]): Promise<ImportResult> => {
     const form = new FormData()

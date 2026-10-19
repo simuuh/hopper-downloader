@@ -8,7 +8,7 @@ import { formatVersion } from './lib/format'
 import { clearSharedLinks, peekSharedLinks } from './lib/share'
 import { notificationsEnabled, notifyItemDone, notifyItemError, notifyPackageComplete } from './lib/notifications'
 import { hashForTab, tabFromHash, type Tab } from './lib/route'
-import type { Package, QueueItem } from './lib/types'
+import type { Package, QueueItem, UpdateStatus } from './lib/types'
 import { AccountsPage } from './pages/AccountsPage'
 import { QueuePage } from './pages/QueuePage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -38,6 +38,10 @@ export function App() {
     packagesRef.current = packages
   }, [packages])
   const [version, setVersion] = useState<string | null>(null)
+  // The last update check's result as hopperd cached it. Reading it never
+  // reaches GitHub; it is re-read hourly so a long-open tab picks up the
+  // daily check.
+  const [update, setUpdate] = useState<UpdateStatus | null>(null)
   // Links shared from another app (PWA share target, iOS Shortcut — see
   // lib/share.ts). Kept until QueuePage has put them into its add form,
   // so they survive the login screen.
@@ -53,6 +57,18 @@ export function App() {
       .then((res) => setVersion(res.version))
       .catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (!loggedIn) return
+    const load = () =>
+      api
+        .getUpdateStatus()
+        .then(setUpdate)
+        .catch(() => {})
+    load()
+    const id = setInterval(load, 60 * 60 * 1000)
+    return () => clearInterval(id)
+  }, [loggedIn])
 
   const handleAuthError = useCallback(() => {
     clearToken()
@@ -133,6 +149,18 @@ export function App() {
       <header className="topbar">
         <div className="brand">
           HOPPER {version && <span className="version">{formatVersion(version)}</span>}
+          {update?.available && update.latest && (
+            <a
+              className="update-badge"
+              href={update.release_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Hopper ${formatVersion(update.latest)} is available — release notes`}
+              aria-label={`Update available: ${formatVersion(update.latest)}`}
+            >
+              <i className="ti ti-arrow-up" />
+            </a>
+          )}
           <small>power-user download manager</small>
         </div>
         <nav className="nav">
@@ -176,7 +204,7 @@ export function App() {
         )}
         {tab === 'accounts' && <AccountsPage onAuthError={handleAuthError} />}
         {tab === 'stats' && <StatsPage onAuthError={handleAuthError} />}
-        {tab === 'settings' && <SettingsPage onAuthError={handleAuthError} />}
+        {tab === 'settings' && <SettingsPage updateStatus={update} onUpdateStatus={setUpdate} onAuthError={handleAuthError} />}
       </main>
     </div>
   )

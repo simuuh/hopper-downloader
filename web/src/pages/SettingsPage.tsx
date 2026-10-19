@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { PageHeader, PageState } from '../components/Page'
 import { literalText } from '../lib/inputProps'
 import { api, ApiError } from '../lib/api'
+import { formatVersion } from '../lib/format'
 import {
   notificationsEnabled,
   notificationsSupported,
@@ -9,11 +10,19 @@ import {
   setNotificationsEnabled,
 } from '../lib/notifications'
 import { getThemePreference, setThemePreference, THEME_EVENT, THEME_LABELS, type ThemePreference } from '../lib/theme'
-import type { Priority, Settings } from '../lib/types'
+import type { Priority, Settings, UpdateStatus } from '../lib/types'
 
 const MB = 1024 * 1024
 
-export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
+export function SettingsPage({
+  updateStatus,
+  onUpdateStatus,
+  onAuthError,
+}: {
+  updateStatus: UpdateStatus | null
+  onUpdateStatus: (s: UpdateStatus) => void
+  onAuthError: () => void
+}) {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [saved, setSaved] = useState<Settings | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -35,6 +44,8 @@ export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
   // whether it's configured is exposed, never the URLs/tokens.
   const [pushEnabled, setPushEnabled] = useState<boolean | null>(null)
   const [pushTest, setPushTest] = useState<{ ok: boolean; text: string } | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [checkError, setCheckError] = useState<string | null>(null)
 
   useEffect(() => {
     api
@@ -69,9 +80,12 @@ export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
     setSaveError(null)
     try {
       const updated = await api.updateSettings(settings)
+      const turnedOnUpdates = updated.update_check && !saved?.update_check
       setSettings(updated)
       setSaved(updated)
       setJustSaved(true)
+      // Show a result right away instead of after the next hourly tick.
+      if (turnedOnUpdates) void checkForUpdate()
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) onAuthError()
       setSaveError(err instanceof Error ? err.message : 'failed to save settings')
@@ -107,6 +121,24 @@ export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
       setPushTest({ ok: false, text: err instanceof Error ? err.message : 'failed to send' })
     }
   }
+
+  async function checkForUpdate() {
+    setChecking(true)
+    setCheckError(null)
+    try {
+      onUpdateStatus(await api.checkForUpdate())
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) onAuthError()
+      setCheckError(err instanceof Error ? err.message : 'update check failed')
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  // A "dev" build can't be compared with a release, so it is never
+  // reported as up to date either.
+  const comparable = updateStatus ? /^v?\d/.test(updateStatus.current) : false
+  const updateError = checkError ?? updateStatus?.error ?? null
 
   // The backend rejects an update atomically with one error string;
   // download_path problems are shown at the field since they're the
@@ -314,6 +346,50 @@ export function SettingsPage({ onAuthError }: { onAuthError: () => void }) {
             {pushTest && <span className={pushTest.ok ? 'ok-text' : 'error-text'}>{pushTest.text}</span>}
           </div>
         )}
+      </div>
+
+      <div className="panel">
+        <h2>Updates</h2>
+        <p className="hint">
+          Installed <span className="mono">{updateStatus ? formatVersion(updateStatus.current) : '…'}</span>
+          {updateStatus?.latest && (
+            <>
+              {' · '}latest release{' '}
+              <a href={updateStatus.release_url} target="_blank" rel="noopener noreferrer" className="mono">
+                {formatVersion(updateStatus.latest)}
+              </a>
+            </>
+          )}
+          {updateStatus?.checked_at && ` · checked ${new Date(updateStatus.checked_at).toLocaleString()}`}
+        </p>
+        {updateStatus?.available && updateStatus.latest && (
+          <p>
+            <a href={updateStatus.release_url} target="_blank" rel="noopener noreferrer">
+              Hopper {formatVersion(updateStatus.latest)} is available — release notes
+            </a>
+          </p>
+        )}
+        {updateStatus && !updateStatus.available && updateStatus.latest && comparable && (
+          <p className="ok-text">Up to date.</p>
+        )}
+        <label className="settings-checkbox">
+          <input
+            type="checkbox"
+            checked={settings.update_check}
+            onChange={(e) => update('update_check', e.target.checked)}
+          />
+          Check for a new release once a day
+        </label>
+        <p className="hint">
+          Asks api.github.com for the latest release. GitHub sees this server&apos;s IP address; nothing about the
+          installation is sent. &quot;Check now&quot; works with this off.
+        </p>
+        <div className="row">
+          <button type="button" className="btn small" disabled={checking} onClick={() => void checkForUpdate()}>
+            {checking ? 'Checking…' : 'Check now'}
+          </button>
+          {updateError && <span className="error-text">{updateError}</span>}
+        </div>
       </div>
 
       <div className="panel">
