@@ -614,6 +614,36 @@ paths:
         '502':
           $ref: '#/components/responses/Error'
 
+  /update:
+    get:
+      operationId: getUpdateStatus
+      summary: Result of the last update check (cached; never contacts GitHub)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateStatus'
+
+  /update/check:
+    post:
+      operationId: checkForUpdate
+      summary: Check GitHub for a newer release now
+      description: >-
+        Runs on request regardless of the update_check setting, which only
+        controls the automatic daily check. Repeated calls within a minute
+        return the cached result.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateStatus'
+        '502':
+          $ref: '#/components/responses/Error'
+
   /stats:
     get:
       operationId: getStats
@@ -703,6 +733,17 @@ components:
       properties:
         token: { type: string }
         expires_at: { type: string, format: date-time }
+
+    UpdateStatus:
+      type: object
+      required: [current, available]
+      properties:
+        current: { type: string, description: 'Running version ("dev" for local builds)' }
+        latest: { type: string, description: Newest release tag; absent until a check succeeded }
+        available: { type: boolean, description: latest is newer than current }
+        release_url: { type: string, format: uri }
+        checked_at: { type: string, format: date-time, description: Last successful check }
+        error: { type: string, description: Why the most recent check failed }
 
     Priority:
       type: string

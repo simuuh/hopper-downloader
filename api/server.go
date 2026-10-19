@@ -120,6 +120,9 @@ type Config struct {
 	// Notifier backs GET /api/v1/notify and POST /api/v1/notify/test. May
 	// be nil.
 	Notifier Notifier
+	// Updates backs GET /api/v1/update and POST /api/v1/update/check. May
+	// be nil.
+	Updates UpdateChecker
 }
 
 // Server serves Hopper's REST API, WebSocket endpoint, and (if webUI is
@@ -234,6 +237,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/config", s.auth(http.HandlerFunc(s.handleGetConfig)))
 	mux.Handle("GET /api/v1/notify", s.auth(http.HandlerFunc(s.handleNotifyStatus)))
 	mux.Handle("POST /api/v1/notify/test", s.auth(http.HandlerFunc(s.handleNotifyTest)))
+	mux.Handle("GET /api/v1/update", s.auth(http.HandlerFunc(s.handleUpdateStatus)))
+	mux.Handle("POST /api/v1/update/check", s.auth(http.HandlerFunc(s.handleUpdateCheck)))
 	mux.Handle("GET /api/v1/stats", s.auth(http.HandlerFunc(s.handleStats)))
 	mux.Handle("POST /api/v1/import", s.auth(http.HandlerFunc(s.handleImport)))
 
