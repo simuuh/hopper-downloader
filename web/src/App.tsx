@@ -4,6 +4,7 @@ import { StatusBar } from './components/StatusBar'
 import { ThemeToggle } from './components/ThemeToggle'
 import { useQueueSocket } from './hooks/useQueueSocket'
 import { api, clearToken, getToken } from './lib/api'
+import { formatVersion } from './lib/format'
 import { clearSharedLinks, peekSharedLinks } from './lib/share'
 import { notificationsEnabled, notifyItemDone, notifyItemError, notifyPackageComplete } from './lib/notifications'
 import { hashForTab, tabFromHash, type Tab } from './lib/route'
@@ -131,7 +132,7 @@ export function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          HOPPER {version && <span className="version">v{version}</span>}
+          HOPPER {version && <span className="version">{formatVersion(version)}</span>}
           <small>power-user download manager</small>
         </div>
         <nav className="nav">
