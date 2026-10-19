@@ -26,6 +26,12 @@ export function groupKeyOf(item: QueueItem): string {
   return item.package_id ? item.package_id : `item:${item.id}`
 }
 
+// groupCount is the number of groups (packages, or package-less items on
+// their own) the items fall into — what the queue shows as rows.
+export function groupCount(items: QueueItem[]): number {
+  return new Set(items.map(groupKeyOf)).size
+}
+
 // sortQueue returns items in queue order: groups (packages) by their
 // highest unfinished priority, then where they were first queued; within
 // a group by priority, archive part number, position.

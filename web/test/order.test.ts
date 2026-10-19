@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { finishedLast } from '../src/lib/order.ts'
+import { finishedLast, groupCount } from '../src/lib/order.ts'
 import type { QueueItem } from '../src/lib/types.ts'
 
 function item(id: string, pkg: string, state: QueueItem['state']): QueueItem {
@@ -33,4 +33,16 @@ test('finishedLast: package-less items use their own key', () => {
 test('finishedLast: nothing finished leaves the list as it is', () => {
   const items = [item('a', 'A', 'queued'), item('b', 'B', 'error')]
   assert.deepEqual(finishedLast(items, new Set()), items)
+})
+
+test('groupCount: counts packages, package-less items each on their own', () => {
+  const items = [
+    item('a1', 'A', 'done'),
+    item('a2', 'A', 'queued'),
+    item('b1', 'B', 'error'),
+    item('x', '', 'queued'),
+    item('y', '', 'done'),
+  ]
+  assert.equal(groupCount(items), 4)
+  assert.equal(groupCount([]), 0)
 })

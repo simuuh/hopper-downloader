@@ -393,6 +393,8 @@ A valid re-check, a credential update or re-enabling ends the cooldown.
   topbar toggle (stored per browser).
 - "Finished" lists packages whose items are all done (newest first, with
   path and extract result), not single done files.
+- The filter tabs count packages (the rows a tab lists); file counts are
+  in the stat cards and each package header.
 - Update check: `internal/update` asks GitHub's latest-release endpoint
   (no drafts or pre-releases) — daily while `update_check` is on (off by
   default; hourly tick, check when the last success is over 24 h old),
