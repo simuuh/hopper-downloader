@@ -182,9 +182,11 @@ type Manager struct {
 	runMu  sync.Mutex
 	runCtx context.Context
 
+	// active holds the live run of each item that has one. A run is
+	// registered by pickNext together with the item's switch to
+	// StateDownloading and removed by run() itself when it returns.
 	activeMu  sync.Mutex
-	active    map[string]context.CancelFunc
-	intent    map[string]string // itemID -> "pause"|"cancel"|"shutdown"
+	active    map[string]*runHandle
 	runningWG sync.WaitGroup
 
 	// captchaSolutions holds a solution submitted via SolveCaptcha for an
@@ -256,8 +258,7 @@ func New(store *Store, registry *plugins.Registry, engine *downloader.Engine, ac
 		diskCheckAttempts: diskCheckAtt,
 		diskCheckInterval: diskCheckIval,
 		wake:              make(chan struct{}, 1),
-		active:            make(map[string]context.CancelFunc),
-		intent:            make(map[string]string),
+		active:            make(map[string]*runHandle),
 		captchaSolutions:  make(map[string]string),
 		finishedSig:       make(map[string]string),
 		subs:              make(map[int]chan Event),
@@ -390,9 +391,8 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	m.closing = true
 	m.closingMu.Unlock()
 	m.activeMu.Lock()
-	for id, cancel := range m.active {
-		m.intent[id] = "shutdown"
-		cancel()
+	for _, h := range m.active {
+		h.stop("shutdown")
 	}
 	m.activeMu.Unlock()
 
@@ -455,13 +455,13 @@ func (m *Manager) dispatch(ctx context.Context) {
 		m.runningWG.Add(1)
 		m.closingMu.Unlock()
 
-		it := m.pickNext()
+		it, h := m.pickNext(ctx)
 		if it == nil {
 			m.runningWG.Done()
 			m.activeFiles.Add(-1)
 			return
 		}
-		go m.run(ctx, it)
+		go m.run(it, h)
 	}
 }
 
@@ -482,21 +482,46 @@ func (m *Manager) tryAdmit() bool {
 	}
 }
 
+// runHandle is one run of an item. The reason it was stopped on purpose
+// (pause, cancel, shutdown) belongs to the run, not to the item ID: a run
+// stuck in a plugin call that ignores its context can outlive a pause and
+// resume, and must neither pick up nor clear the state of a later run.
+type runHandle struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	intent string // "pause"|"cancel"|"shutdown", or "" while running; guarded by Manager.activeMu
+}
+
+// stop records why the run is being stopped and cancels it. Must be called
+// with Manager.activeMu held.
+func (h *runHandle) stop(intent string) {
+	h.intent = intent
+	h.cancel()
+}
+
 // pickNext finds the first runnable item in queue order (see queueOrder —
 // the same top-to-bottom order the Web UI shows), transitions it to
 // StateDownloading under lock (so no other dispatch call can pick it up
-// too), and returns a copy. With Config.SequentialParts, an archive part
-// whose lower-numbered sibling hasn't started yet is skipped (see
-// isSequentialBlocked).
-func (m *Manager) pickNext() *Item {
+// too) and registers its run, whose context derives from ctx. It returns
+// a copy of the item and the run. With Config.SequentialParts, an archive
+// part whose lower-numbered sibling hasn't started yet is skipped (see
+// isSequentialBlocked). An item whose previous run hasn't returned yet is
+// skipped too: it starts once that run is gone.
+func (m *Manager) pickNext(ctx context.Context) (*Item, *runHandle) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Lock order: m.mu before m.activeMu, as everywhere else.
+	m.activeMu.Lock()
+	defer m.activeMu.Unlock()
 
 	now := time.Now()
 	order := newQueueOrder(m.items)
 	var best *Item
 	for _, it := range m.items {
 		if !it.runnable(now) {
+			continue
+		}
+		if _, running := m.active[it.ID]; running {
 			continue
 		}
 		if m.cfg.SequentialParts && m.isSequentialBlocked(it) {
@@ -507,7 +532,7 @@ func (m *Manager) pickNext() *Item {
 		}
 	}
 	if best == nil {
-		return nil
+		return nil, nil
 	}
 	best.State = StateDownloading
 	best.Error = ""
@@ -517,9 +542,12 @@ func (m *Manager) pickNext() *Item {
 	if err := m.store.PutItem(best); err != nil {
 		m.log.Error("queue: persist item", "item_id", best.ID, "error", err)
 	}
+	rctx, cancel := context.WithCancel(ctx)
+	h := &runHandle{ctx: rctx, cancel: cancel}
+	m.active[best.ID] = h
 	cp := *best
 	m.publish(Event{Type: EventItemUpdated, Item: &cp})
-	return &cp
+	return &cp, h
 }
 
 // isSequentialBlocked reports whether it must not start yet because a
@@ -673,28 +701,24 @@ func RankHosters(all []plugins.Hoster, priority []string) []plugins.Hoster {
 	return out
 }
 
-func (m *Manager) run(ctx context.Context, it *Item) {
+func (m *Manager) run(it *Item, h *runHandle) {
 	defer m.runningWG.Done()
 	defer func() {
 		m.activeFiles.Add(-1)
 		m.wakeAsync()
 	}()
-
-	dctx, cancel := context.WithCancel(ctx)
-	m.activeMu.Lock()
-	m.active[it.ID] = cancel
-	m.activeMu.Unlock()
 	defer func() {
-		cancel()
+		h.cancel()
 		m.activeMu.Lock()
-		delete(m.active, it.ID)
-		delete(m.intent, it.ID)
+		if m.active[it.ID] == h {
+			delete(m.active, it.ID)
+		}
 		m.activeMu.Unlock()
 	}()
 
 	hoster, ok := m.matchHoster(it.URL)
 	if !ok {
-		m.finishWithIntentCheck(it.ID, func() { m.fail(it.ID, "no plugin registered for this URL") })
+		m.finishWithIntentCheck(h, it.ID, func() { m.fail(it.ID, "no plugin registered for this URL") })
 		return
 	}
 
@@ -743,7 +767,7 @@ func (m *Manager) run(ctx context.Context, it *Item) {
 					hoster = next
 					continue
 				}
-				m.finishWithIntentCheck(it.ID, func() {
+				m.finishWithIntentCheck(h, it.ID, func() {
 					m.fail(it.ID, "no plugin with a configured account can handle this URL")
 				})
 				return
@@ -755,11 +779,11 @@ func (m *Manager) run(ctx context.Context, it *Item) {
 				}
 			}
 			msg := fmt.Sprintf("resolve: %v", err)
-			m.finishWithIntentCheck(it.ID, func() { m.failMaybeTransient(it.ID, msg, err) })
+			m.finishWithIntentCheck(h, it.ID, func() { m.failMaybeTransient(it.ID, msg, err) })
 			return
 		}
 		if !info.Available {
-			m.finishWithIntentCheck(it.ID, func() { m.fail(it.ID, "file unavailable at hoster") })
+			m.finishWithIntentCheck(h, it.ID, func() { m.fail(it.ID, "file unavailable at hoster") })
 			return
 		}
 
@@ -779,7 +803,7 @@ func (m *Manager) run(ctx context.Context, it *Item) {
 				// (e.g. a free-tier account that can't use a premium-only
 				// endpoint but can still download, subject to a wait or a
 				// captcha). See tryFreeFallback's doc comment.
-				url, ok := m.tryFreeFallback(dctx, it, hoster, acc)
+				url, ok := m.tryFreeFallback(h, it, hoster, acc)
 				if !ok {
 					return
 				}
@@ -792,7 +816,7 @@ func (m *Manager) run(ctx context.Context, it *Item) {
 					}
 				}
 				msg := fmt.Sprintf("fetch download url: %v", err)
-				m.finishWithIntentCheck(it.ID, func() { m.failMaybeTransient(it.ID, msg, err) })
+				m.finishWithIntentCheck(h, it.ID, func() { m.failMaybeTransient(it.ID, msg, err) })
 				return
 			}
 		}
@@ -809,13 +833,13 @@ func (m *Manager) run(ctx context.Context, it *Item) {
 		},
 	}
 
-	res, err := m.engine.Download(dctx, req)
+	res, err := m.engine.Download(h.ctx, req)
 	if err != nil {
-		m.discardIfCancelled(it.ID, req.RelPath)
+		m.discardIfCancelled(h, it.ID, req.RelPath)
 		// Always worth an automatic retry: it re-runs Resolve/
 		// FetchDownloadURL (a fresh, unexpired direct link) and the
 		// downloader resumes from the bytes already on disk.
-		m.finishWithIntentCheck(it.ID, func() { m.failTransient(it.ID, err.Error()) })
+		m.finishWithIntentCheck(h, it.ID, func() { m.failTransient(it.ID, err.Error()) })
 		return
 	}
 	if res.Skipped {
@@ -881,17 +905,17 @@ func (m *Manager) rotateAccount(hosterKey string, acc *plugins.Account, triedAcc
 // download step using the *FileInfo already resolved earlier in this
 // attempt; every other case returns ("", false), meaning "already fully
 // handled — the caller should just return".
-func (m *Manager) tryFreeFallback(ctx context.Context, it *Item, hoster plugins.Hoster, acc *plugins.Account) (string, bool) {
+func (m *Manager) tryFreeFallback(h *runHandle, it *Item, hoster plugins.Hoster, acc *plugins.Account) (string, bool) {
 	fd, ok := hoster.(plugins.FreeDownloader)
 	if !ok {
-		m.finishWithIntentCheck(it.ID, func() {
+		m.finishWithIntentCheck(h, it.ID, func() {
 			m.fail(it.ID, "no plugin with a configured account can handle this URL")
 		})
 		return "", false
 	}
 
 	freeAcc := m.withCaptchaSolution(it.ID, acc)
-	url, err := fd.FetchFreeDownloadURL(ctx, it.URL, freeAcc)
+	url, err := fd.FetchFreeDownloadURL(h.ctx, it.URL, freeAcc)
 	if err == nil {
 		return url, true
 	}
@@ -899,18 +923,18 @@ func (m *Manager) tryFreeFallback(ctx context.Context, it *Item, hoster plugins.
 	var retryErr plugins.ErrRetryAfter
 	if errors.As(err, &retryErr) {
 		at := time.Now().Add(time.Duration(retryErr.Seconds) * time.Second)
-		m.finishWithIntentCheck(it.ID, func() { m.setRetryAfter(it.ID, at) })
+		m.finishWithIntentCheck(h, it.ID, func() { m.setRetryAfter(it.ID, at) })
 		m.armWakeAt(at)
 		return "", false
 	}
 
 	var captchaErr plugins.ErrCaptchaRequired
 	if errors.As(err, &captchaErr) {
-		m.finishWithIntentCheck(it.ID, func() { m.setCaptchaURL(it.ID, captchaErr.ImageURL) })
+		m.finishWithIntentCheck(h, it.ID, func() { m.setCaptchaURL(it.ID, captchaErr.ImageURL) })
 		return "", false
 	}
 
-	m.finishWithIntentCheck(it.ID, func() { m.fail(it.ID, fmt.Sprintf("free download: %v", err)) })
+	m.finishWithIntentCheck(h, it.ID, func() { m.fail(it.ID, fmt.Sprintf("free download: %v", err)) })
 	return "", false
 }
 
@@ -1041,13 +1065,13 @@ func (m *Manager) SolveCaptcha(id, solution string) error {
 	return nil
 }
 
-// finishWithIntentCheck consults (and clears) the pause/cancel/shutdown
-// intent recorded for id and only invokes onError if the failure wasn't
+// finishWithIntentCheck consults the pause/cancel/shutdown intent recorded
+// for run h of item id and only invokes onError if the failure wasn't
 // caused by one of those intentional actions, which already applied their
 // own terminal state.
-func (m *Manager) finishWithIntentCheck(id string, onError func()) {
+func (m *Manager) finishWithIntentCheck(h *runHandle, id string, onError func()) {
 	m.activeMu.Lock()
-	intent := m.intent[id]
+	intent := h.intent
 	m.activeMu.Unlock()
 
 	switch intent {
@@ -2122,9 +2146,8 @@ func (m *Manager) Pause(id string) error {
 
 	if wasDownloading {
 		m.activeMu.Lock()
-		m.intent[id] = "pause"
-		if cancel, ok := m.active[id]; ok {
-			cancel()
+		if h, ok := m.active[id]; ok {
+			h.stop("pause")
 		}
 		m.activeMu.Unlock()
 	}
@@ -2274,9 +2297,8 @@ func (m *Manager) Cancel(id string) error {
 
 	if wasDownloading {
 		m.activeMu.Lock()
-		m.intent[id] = "cancel"
-		if cancel, ok := m.active[id]; ok {
-			cancel()
+		if h, ok := m.active[id]; ok {
+			h.stop("cancel")
 		}
 		m.activeMu.Unlock()
 	}
@@ -2548,9 +2570,9 @@ func (m *Manager) RenamePackage(id, name string) (*Package, error) {
 // because its item was cancelled (removed from the queue) — the user no
 // longer wants it, and multi-GB .part files would otherwise linger.
 // Paused or shut-down transfers keep their data for resuming.
-func (m *Manager) discardIfCancelled(id, relPath string) {
+func (m *Manager) discardIfCancelled(h *runHandle, id, relPath string) {
 	m.activeMu.Lock()
-	cancelled := m.intent[id] == "cancel"
+	cancelled := h.intent == "cancel"
 	m.activeMu.Unlock()
 	if !cancelled {
 		return
