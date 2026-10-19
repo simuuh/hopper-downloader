@@ -30,7 +30,11 @@ for writing a hoster plugin see [PLUGIN_GUIDE.md](PLUGIN_GUIDE.md).
 
 Go 1.26+ (`toolchain go1.26.9` — a supported release; golangci-lint and
 govulncheck must be able to load it), no CGO. All state lives in one
-bbolt file (`database.path`).
+bbolt file (`database.path`), stamped with its layout version
+(`internal/dbschema`): hopperd refuses a database a newer release wrote
+instead of misreading it after a downgrade. A layout change that an
+older release would misread bumps the version and adds its migration
+there.
 
 ## Package layout
 
@@ -49,6 +53,7 @@ internal/stats     daily/all-time download statistics
 internal/notify    "package finished" push: JSON webhook and/or ntfy
 internal/update    opt-in check for a newer release (GitHub API)
 internal/config    hopper.yaml + HOPPER_* env overrides
+internal/dbschema  layout version of the bbolt database
 internal/pathsafe  path-traversal-safe joins and filename sanitizing
 internal/scheduler timers for the dispatcher
 plugins/           Hoster interface + one package per hoster
@@ -96,6 +101,21 @@ fields. Extraction status is likewise a separate `extract_state`.
 runs from two goroutines (poll tick and wake channel); a plain
 load-then-increment would over-admit. `Shutdown` sets a flag under
 `closingMu` so no run is admitted while it waits for in-flight ones.
+
+**Runs.** Each run of an item has its own handle (context, cancel, and
+why it was stopped: pause, cancel or shutdown), registered by
+`pickNext` under the lock that marks the item downloading and removed
+only by that run. A plugin call that ignores its context can keep a run
+alive after a pause; until it returns, `pickNext` doesn't start the item
+again, and the old run can't touch a later run's handle. A run that ends
+while the Manager is stopping counts as shut down — hopperd's signal
+context is cancelled before `Shutdown` records the intent — so it goes
+back to `queued` without using an automatic retry. A panic in a run
+fails that item ("internal error") instead of ending hopperd.
+
+**Damaged records.** A stored item or package that no longer decodes is
+moved to the `queue_quarantine` bucket (key `<bucket>/<id>`) and logged;
+the rest of the queue loads.
 
 **Grouping and merging (`AddLinks`, `grouping.go`).**
 - Container links (`plugins.Expander`, e.g. hide.cx) are expanded first.
@@ -286,7 +306,11 @@ to the plain premium page and respects `accounts.referral_links`.
 packages: zip/tar.gz/tar.bz2 with the standard library, RAR (incl.
 multi-part) via an external `unrar` (the Docker image ships it).
 Passwords are tried as: none → package password → user list from the
-settings (no built-in list).
+settings (no built-in list). zip and tar extraction stop when their
+context ends (extraction timeout, shutdown), after 100 000 entries, or
+when the output exceeds 100 times the archive's size (at least 1 GiB) —
+a decompression bomb, not a download; a file left unfinished is
+removed.
 
 `queue.Manager.maybeExtract` decides *when*: on every completion it
 checks whether all items of the item's archive group in the same
