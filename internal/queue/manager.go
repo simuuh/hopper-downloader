@@ -266,10 +266,11 @@ func New(store *Store, registry *plugins.Registry, engine *downloader.Engine, ac
 	}
 	m.parallelFiles.Store(int64(cfg.ParallelFiles))
 
-	items, err := store.ListItems()
+	items, damaged, err := store.ListItems()
 	if err != nil {
-		return nil, fmt.Errorf("queue: load items: %w", err)
+		return nil, err
 	}
+	logDamaged(log, damaged)
 	for _, it := range items {
 		if it.State == StateDownloading {
 			it.State = StateQueued
@@ -281,10 +282,11 @@ func New(store *Store, registry *plugins.Registry, engine *downloader.Engine, ac
 			m.posSeq = it.Position + 1
 		}
 	}
-	pkgs, err := store.ListPackages()
+	pkgs, damaged, err := store.ListPackages()
 	if err != nil {
-		return nil, fmt.Errorf("queue: load packages: %w", err)
+		return nil, err
 	}
+	logDamaged(log, damaged)
 	used := make(map[string]bool, len(pkgs))
 	for _, it := range m.items {
 		if it.PackageID != "" {
@@ -305,6 +307,14 @@ func New(store *Store, registry *plugins.Registry, engine *downloader.Engine, ac
 	}
 
 	return m, nil
+}
+
+// logDamaged reports records Store set aside because they no longer
+// decode; the queue loads without them.
+func logDamaged(log *slog.Logger, damaged []DamagedRecord) {
+	for _, d := range damaged {
+		log.Error("queue: damaged record moved to quarantine, skipped", "key", d.Key, "error", d.Err)
+	}
 }
 
 // Start begins the dispatch loop: a periodic poll (Config.PollInterval)

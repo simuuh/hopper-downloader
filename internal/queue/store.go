@@ -10,7 +10,17 @@ import (
 var (
 	itemsBucket    = []byte("queue_items")
 	packagesBucket = []byte("queue_packages")
+	// quarantineBucket keeps records that no longer decode, keyed
+	// "<bucket>/<key>", for inspection instead of deleting them.
+	quarantineBucket = []byte("queue_quarantine")
 )
+
+// DamagedRecord is a stored record that couldn't be decoded and was moved
+// to the quarantine bucket.
+type DamagedRecord struct {
+	Key string // "<bucket>/<key>" in the quarantine bucket
+	Err error
+}
 
 // Store persists Items and Packages to a bbolt database file. It performs
 // no business logic; Manager is the only caller and owns all invariants.
@@ -54,23 +64,23 @@ func (s *Store) DeleteItem(id string) error {
 	})
 }
 
-// ListItems returns every persisted Item, in undefined order.
-func (s *Store) ListItems() ([]*Item, error) {
+// ListItems returns every persisted Item, in undefined order. Records
+// that don't decode are moved to quarantine and reported, not returned
+// (see loadAll).
+func (s *Store) ListItems() ([]*Item, []DamagedRecord, error) {
 	var out []*Item
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket(itemsBucket).ForEach(func(_, v []byte) error {
-			var it Item
-			if err := json.Unmarshal(v, &it); err != nil {
-				return fmt.Errorf("unmarshal item: %w", err)
-			}
-			out = append(out, &it)
-			return nil
-		})
+	damaged, err := s.loadAll(itemsBucket, func(v []byte) error {
+		var it Item
+		if err := json.Unmarshal(v, &it); err != nil {
+			return err
+		}
+		out = append(out, &it)
+		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("queue: load items: %w", err)
 	}
-	return out, nil
+	return out, damaged, nil
 }
 
 // PutPackage inserts or replaces a Package.
@@ -85,22 +95,70 @@ func (s *Store) PutPackage(p *Package) error {
 }
 
 // ListPackages returns every persisted Package, in undefined order.
-func (s *Store) ListPackages() ([]*Package, error) {
+// Records that don't decode are moved to quarantine and reported, not
+// returned (see loadAll).
+func (s *Store) ListPackages() ([]*Package, []DamagedRecord, error) {
 	var out []*Package
+	damaged, err := s.loadAll(packagesBucket, func(v []byte) error {
+		var p Package
+		if err := json.Unmarshal(v, &p); err != nil {
+			return err
+		}
+		out = append(out, &p)
+		return nil
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("queue: load packages: %w", err)
+	}
+	return out, damaged, nil
+}
+
+// loadAll passes every record of bucket to decode. A record decode
+// rejects is moved to quarantineBucket instead of failing the load: one
+// damaged record (a torn write, a value a newer version wrote) must not
+// keep hopperd from starting, and moving it keeps it for inspection
+// without it being reported again on every start.
+func (s *Store) loadAll(bucket []byte, decode func([]byte) error) ([]DamagedRecord, error) {
+	type bad struct {
+		key, value []byte
+		err        error
+	}
+	var bads []bad
 	err := s.db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket(packagesBucket).ForEach(func(_, v []byte) error {
-			var p Package
-			if err := json.Unmarshal(v, &p); err != nil {
-				return fmt.Errorf("unmarshal package: %w", err)
+		return tx.Bucket(bucket).ForEach(func(k, v []byte) error {
+			if err := decode(v); err != nil {
+				bads = append(bads, bad{key: append([]byte(nil), k...), value: append([]byte(nil), v...), err: err})
 			}
-			out = append(out, &p)
 			return nil
 		})
 	})
-	if err != nil {
+	if err != nil || len(bads) == 0 {
 		return nil, err
 	}
-	return out, nil
+
+	damaged := make([]DamagedRecord, 0, len(bads))
+	err = s.db.Update(func(tx *bbolt.Tx) error {
+		q, err := tx.CreateBucketIfNotExists(quarantineBucket)
+		if err != nil {
+			return err
+		}
+		src := tx.Bucket(bucket)
+		for _, b := range bads {
+			qkey := string(bucket) + "/" + string(b.key)
+			if err := q.Put([]byte(qkey), b.value); err != nil {
+				return err
+			}
+			if err := src.Delete(b.key); err != nil {
+				return err
+			}
+			damaged = append(damaged, DamagedRecord{Key: qkey, Err: b.err})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("quarantine damaged records: %w", err)
+	}
+	return damaged, nil
 }
 
 // DeletePackage removes a Package by ID. It does not touch the package's
