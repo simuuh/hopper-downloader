@@ -57,6 +57,13 @@ type Settings struct {
 	// Plugins not listed follow in their default order. Read fresh by
 	// queue.Manager on every match.
 	AccountPriority []string `json:"account_priority"`
+
+	// UpdateCheck lets hopperd look for a newer release on GitHub once a
+	// day (see internal/update). Off unless the user turns it on: it is
+	// the one outbound call that isn't caused by the user's own
+	// downloads or configuration. A record persisted before this field
+	// existed loads as false. Read fresh by the periodic job.
+	UpdateCheck bool `json:"update_check"`
 }
 
 // Update is a partial change: nil fields are left as-is. Every provided
@@ -82,6 +89,8 @@ type Update struct {
 	// AccountPriority, when provided, replaces the whole order; an
 	// explicit empty list restores the default order.
 	AccountPriority []string `json:"account_priority,omitempty"`
+
+	UpdateCheck *bool `json:"update_check,omitempty"`
 }
 
 // Hooks lets the caller (cmd/hopperd/main.go, the only place that
@@ -261,6 +270,9 @@ func (m *Manager) Apply(u Update) (Settings, error) {
 			return Settings{}, err
 		}
 		next.AccountPriority = order
+	}
+	if u.UpdateCheck != nil {
+		next.UpdateCheck = *u.UpdateCheck
 	}
 
 	m.cur = next
