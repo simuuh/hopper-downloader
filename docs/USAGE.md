@@ -141,3 +141,13 @@ button.
 
 **Browser:** Settings → This browser enables desktop notifications while
 the Web UI is open.
+
+## Updates
+
+Settings → Updates shows the installed version and checks GitHub for a
+newer release: once a day if you turn "Check for a new release once a
+day" on (off by default), or when you click "Check now". When a newer
+release exists, a small ↑ next to the version in the topbar links to its
+release notes. A check is a single anonymous request to api.github.com;
+GitHub sees the server's IP address, nothing else about the installation
+is sent.

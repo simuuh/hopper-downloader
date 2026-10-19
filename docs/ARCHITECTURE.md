@@ -47,6 +47,7 @@ internal/account   encrypted hoster credentials, validation cache
 internal/settings  runtime-editable settings (bbolt) with live hooks
 internal/stats     daily/all-time download statistics
 internal/notify    "package finished" push: JSON webhook and/or ntfy
+internal/update    opt-in check for a newer release (GitHub API)
 internal/config    hopper.yaml + HOPPER_* env overrides
 internal/pathsafe  path-traversal-safe joins and filename sanitizing
 internal/scheduler timers for the dispatcher
@@ -392,6 +393,14 @@ A valid re-check, a credential update or re-enabling ends the cooldown.
   topbar toggle (stored per browser).
 - "Finished" lists packages whose items are all done (newest first, with
   path and extract result), not single done files.
+- Update check: `internal/update` asks GitHub's latest-release endpoint
+  (no drafts or pre-releases) — daily while `update_check` is on (off by
+  default; hourly tick, check when the last success is over 24 h old),
+  or on `POST /update/check`. The result lives in memory only; `GET
+  /update` never contacts GitHub. The release link is built from the
+  validated tag, not taken from the response, and manual checks are
+  throttled to one a minute (GitHub allows 60 unauthenticated requests
+  an hour). A "dev" build is never reported as outdated.
 - Sharing from a phone: `web/public/manifest.json` declares a
   `share_target` (GET `/` with `share_url`/`share_text`/`share_title`;
   the title is kept only if it contains a URL). `lib/share.ts` parks the

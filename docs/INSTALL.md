@@ -27,7 +27,8 @@ docker compose exec -it hopperd hopperd -set-admin-password
 docker compose restart hopperd
 ```
 
-**Update:** `docker compose pull && docker compose up -d`. All settings
+**Update:** `docker compose pull && docker compose up -d`. To learn
+about new releases, turn on Settings → Updates (off by default). All settings
 live in `.env`; `docker-compose.yml` stays untouched, so it can simply be
 replaced by a newer one. Needs Docker Compose 2.24 or newer.
 
@@ -121,6 +122,8 @@ UI under Settings, without a restart.
   the URLs you queue, your hosters' APIs, JDownloader's public
   key-exchange service for `.dlc` import (see
   [internal/dlc](../internal/dlc/crypto.go) for why that's unavoidable),
-  and the notification targets you configure.
+  the notification targets you configure, and — only if you turn it on
+  or click "Check now" in Settings → Updates — GitHub's API for the
+  latest release.
 
 Security issues: see [SECURITY.md](../SECURITY.md).
