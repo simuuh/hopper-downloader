@@ -392,6 +392,8 @@ A valid re-check, a credential update or re-enabling ends the cooldown.
   topbar toggle (stored per browser).
 - "Finished" lists packages whose items are all done (newest first, with
   path and extract result), not single done files.
+- The filter tabs count packages (the rows a tab lists); file counts are
+  in the stat cards and each package header.
 - Sharing from a phone: `web/public/manifest.json` declares a
   `share_target` (GET `/` with `share_url`/`share_text`/`share_title`;
   the title is kept only if it contains a URL). `lib/share.ts` parks the
