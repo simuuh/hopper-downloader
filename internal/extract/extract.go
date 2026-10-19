@@ -34,6 +34,29 @@ var ErrAllPasswordsFailed = errors.New("extract: no candidate password opened th
 // doesn't recognize.
 var ErrUnsupportedFormat = errors.New("extract: unsupported archive format")
 
+// ErrTooLarge is returned when a zip or tar archive expands beyond its
+// size budget (see Extractor), the shape of a decompression bomb.
+var ErrTooLarge = errors.New("extract: archive expands beyond the size limit")
+
+// ErrTooManyEntries is returned when a zip or tar archive holds more
+// entries than the limit (see Extractor).
+var ErrTooManyEntries = errors.New("extract: archive has too many entries")
+
+// Limits for zip and tar extraction. RAR goes through unrar, which is
+// left to its own handling.
+const (
+	// defaultMaxRatio caps what an archive may expand to, as a multiple of
+	// its own size. Downloads are mostly already compressed media (about
+	// 1:1) or text (up to about 10:1); decompression bombs reach 1000:1
+	// and more.
+	defaultMaxRatio = 100
+	// defaultMinBudget is the budget for archives too small for the ratio
+	// to allow a sensible size.
+	defaultMinBudget  = 1 << 30
+	defaultMaxEntries = 100_000
+	copyBufferSize    = 256 << 10
+)
+
 // Result summarizes a successful extraction.
 type Result struct {
 	// ExtractedFiles lists the full paths of every file written.
@@ -53,6 +76,11 @@ type Extractor struct {
 	// UnrarPath is the unrar binary to invoke for .rar archives; "" is
 	// treated as "unrar" (resolved via PATH).
 	UnrarPath string
+
+	// minBudget and maxEntries override the zip/tar limits (0 = default);
+	// tests use them to stay small.
+	minBudget  int64
+	maxEntries int
 }
 
 // Extract extracts the archive at srcPath into destDir (created if it
@@ -76,13 +104,20 @@ type Extractor struct {
 // racy for no benefit, when the caller already has the current value in
 // hand at call time.
 func (e *Extractor) Extract(ctx context.Context, srcPath, destDir, pkgPassword string, userPasswords []string) (*Result, error) {
-	switch Detect(filepath.Base(srcPath)) {
-	case KindZip:
-		return extractZip(srcPath, destDir)
-	case KindTarGz:
-		return extractTarGz(srcPath, destDir)
-	case KindTarBz2:
-		return extractTarBz2(srcPath, destDir)
+	switch kind := Detect(filepath.Base(srcPath)); kind {
+	case KindZip, KindTarGz, KindTarBz2:
+		lim, err := e.limitsFor(ctx, srcPath)
+		if err != nil {
+			return nil, err
+		}
+		switch kind {
+		case KindZip:
+			return extractZip(lim, srcPath, destDir)
+		case KindTarGz:
+			return extractTarGz(lim, srcPath, destDir)
+		default:
+			return extractTarBz2(lim, srcPath, destDir)
+		}
 	case KindRAR:
 		return e.extractRAR(ctx, srcPath, destDir, candidatePasswords(pkgPassword, userPasswords))
 	default:
@@ -114,7 +149,88 @@ func candidatePasswords(pkgPassword string, userPasswords []string) []string {
 	return out
 }
 
-func extractZip(srcPath, destDir string) (*Result, error) {
+// limits tracks one zip/tar extraction against its context, its
+// remaining size budget and its entry count.
+type limits struct {
+	ctx        context.Context
+	left       int64
+	entries    int
+	maxEntries int
+}
+
+func (e *Extractor) limitsFor(ctx context.Context, srcPath string) (*limits, error) {
+	info, err := os.Stat(srcPath)
+	if err != nil {
+		return nil, fmt.Errorf("extract: stat %q: %w", srcPath, err)
+	}
+	budget := e.minBudget
+	if budget <= 0 {
+		budget = defaultMinBudget
+	}
+	if byRatio := info.Size() * defaultMaxRatio; byRatio > budget {
+		budget = byRatio
+	}
+	maxEntries := e.maxEntries
+	if maxEntries <= 0 {
+		maxEntries = defaultMaxEntries
+	}
+	return &limits{ctx: ctx, left: budget, maxEntries: maxEntries}, nil
+}
+
+// entry accounts for the next archive entry and reports whether
+// extraction may go on.
+func (l *limits) entry() error {
+	if err := l.ctx.Err(); err != nil {
+		return err
+	}
+	l.entries++
+	if l.entries > l.maxEntries {
+		return fmt.Errorf("%w (more than %d)", ErrTooManyEntries, l.maxEntries)
+	}
+	return nil
+}
+
+// copy writes src to the file dest, within the remaining budget and while
+// the context lasts. A file it couldn't finish is removed.
+func (l *limits) copy(dest string, src io.Reader) (err error) {
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("extract: create %q: %w", dest, err)
+	}
+	defer func() {
+		if cerr := out.Close(); err == nil && cerr != nil {
+			err = fmt.Errorf("extract: write %q: %w", dest, cerr)
+		}
+		if err != nil {
+			_ = os.Remove(dest)
+		}
+	}()
+
+	buf := make([]byte, copyBufferSize)
+	for {
+		if err := l.ctx.Err(); err != nil {
+			return err
+		}
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			if int64(n) > l.left {
+				return ErrTooLarge
+			}
+			l.left -= int64(n)
+			if _, err := out.Write(buf[:n]); err != nil {
+				return fmt.Errorf("extract: write %q: %w", dest, err)
+			}
+		}
+		if errors.Is(rerr, io.EOF) {
+			return nil
+		}
+		if rerr != nil {
+			return fmt.Errorf("extract: read entry for %q: %w", dest, rerr)
+		}
+	}
+}
+
+func extractZip(lim *limits, srcPath, destDir string) (*Result, error) {
 	r, err := zip.OpenReader(srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("extract: open zip: %w", err)
@@ -123,6 +239,9 @@ func extractZip(srcPath, destDir string) (*Result, error) {
 
 	var extracted []string
 	for _, f := range r.File {
+		if err := lim.entry(); err != nil {
+			return nil, err
+		}
 		dest, err := pathsafe.SafeJoin(destDir, f.Name)
 		if err != nil {
 			return nil, fmt.Errorf("extract: zip entry %q: %w", f.Name, err)
@@ -136,7 +255,7 @@ func extractZip(srcPath, destDir string) (*Result, error) {
 		if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
 			return nil, fmt.Errorf("extract: create directory: %w", err)
 		}
-		if err := writeZipEntry(f, dest); err != nil {
+		if err := writeZipEntry(lim, f, dest); err != nil {
 			return nil, err
 		}
 		extracted = append(extracted, dest)
@@ -144,30 +263,16 @@ func extractZip(srcPath, destDir string) (*Result, error) {
 	return &Result{ExtractedFiles: extracted}, nil
 }
 
-func writeZipEntry(f *zip.File, dest string) error {
+func writeZipEntry(lim *limits, f *zip.File, dest string) error {
 	rc, err := f.Open()
 	if err != nil {
 		return fmt.Errorf("extract: open zip entry %q: %w", f.Name, err)
 	}
 	defer func() { _ = rc.Close() }()
-
-	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("extract: create %q: %w", dest, err)
-	}
-	defer func() { _ = out.Close() }()
-
-	// Archive contents come from a file the user chose to download, not
-	// an untrusted multi-tenant upload — same trust boundary as the
-	// download itself, so an unbounded copy (no decompression-bomb cap)
-	// is consistent with the rest of Hopper's threat model.
-	if _, err := io.Copy(out, rc); err != nil { //nolint:gosec // G110: see comment above
-		return fmt.Errorf("extract: write %q: %w", dest, err)
-	}
-	return nil
+	return lim.copy(dest, rc)
 }
 
-func extractTarGz(srcPath, destDir string) (*Result, error) {
+func extractTarGz(lim *limits, srcPath, destDir string) (*Result, error) {
 	f, err := os.Open(srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("extract: open %q: %w", srcPath, err)
@@ -178,19 +283,19 @@ func extractTarGz(srcPath, destDir string) (*Result, error) {
 		return nil, fmt.Errorf("extract: gzip reader: %w", err)
 	}
 	defer func() { _ = gz.Close() }()
-	return extractTar(gz, destDir)
+	return extractTar(lim, gz, destDir)
 }
 
-func extractTarBz2(srcPath, destDir string) (*Result, error) {
+func extractTarBz2(lim *limits, srcPath, destDir string) (*Result, error) {
 	f, err := os.Open(srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("extract: open %q: %w", srcPath, err)
 	}
 	defer func() { _ = f.Close() }()
-	return extractTar(bzip2.NewReader(f), destDir)
+	return extractTar(lim, bzip2.NewReader(f), destDir)
 }
 
-func extractTar(r io.Reader, destDir string) (*Result, error) {
+func extractTar(lim *limits, r io.Reader, destDir string) (*Result, error) {
 	tr := tar.NewReader(r)
 	var extracted []string
 	for {
@@ -200,6 +305,9 @@ func extractTar(r io.Reader, destDir string) (*Result, error) {
 		}
 		if err != nil {
 			return nil, fmt.Errorf("extract: read tar entry: %w", err)
+		}
+		if err := lim.entry(); err != nil {
+			return nil, err
 		}
 		dest, err := pathsafe.SafeJoin(destDir, hdr.Name)
 		if err != nil {
@@ -214,7 +322,7 @@ func extractTar(r io.Reader, destDir string) (*Result, error) {
 			if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
 				return nil, fmt.Errorf("extract: create directory: %w", err)
 			}
-			if err := writeTarEntry(tr, dest); err != nil {
+			if err := lim.copy(dest, tr); err != nil {
 				return nil, err
 			}
 			extracted = append(extracted, dest)
@@ -226,18 +334,6 @@ func extractTar(r io.Reader, destDir string) (*Result, error) {
 		}
 	}
 	return &Result{ExtractedFiles: extracted}, nil
-}
-
-func writeTarEntry(tr *tar.Reader, dest string) error {
-	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("extract: create %q: %w", dest, err)
-	}
-	defer func() { _ = out.Close() }()
-	if _, err := io.Copy(out, tr); err != nil { //nolint:gosec // G110: see extractZip's writeZipEntry comment
-		return fmt.Errorf("extract: write %q: %w", dest, err)
-	}
-	return nil
 }
 
 // extractRAR tries each candidate password (see candidatePasswords) in
