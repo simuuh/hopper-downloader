@@ -409,6 +409,15 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	}
 }
 
+// stopping reports whether Shutdown has begun or the context Start was
+// given is done.
+func (m *Manager) stopping() bool {
+	m.closingMu.Lock()
+	closing := m.closing
+	m.closingMu.Unlock()
+	return closing || m.shutdownCtx().Err() != nil
+}
+
 func (m *Manager) armSchedule(ctx context.Context, at time.Time) {
 	m.sched.At(ctx, at, func(ctx context.Context) { m.dispatch(ctx) })
 }
@@ -1069,10 +1078,18 @@ func (m *Manager) SolveCaptcha(id, solution string) error {
 // for run h of item id and only invokes onError if the failure wasn't
 // caused by one of those intentional actions, which already applied their
 // own terminal state.
+//
+// A run that ends while the Manager is stopping counts as shut down even
+// without a recorded intent: hopperd's signal context, which Start
+// received, is cancelled before Shutdown gets to record one, and the
+// "context canceled" that follows must not use up an automatic retry.
 func (m *Manager) finishWithIntentCheck(h *runHandle, id string, onError func()) {
 	m.activeMu.Lock()
 	intent := h.intent
 	m.activeMu.Unlock()
+	if intent == "" && m.stopping() {
+		intent = "shutdown"
+	}
 
 	switch intent {
 	case "pause", "cancel":
