@@ -337,3 +337,65 @@ func TestRevalidateAll_SkipsDisabledAndUpdatesCache(t *testing.T) {
 		t.Fatalf("cache not updated: %+v", got)
 	}
 }
+
+// A validation finishing while the account is deleted must not write the
+// account back: after a reload from the database it stays deleted (M4).
+func TestSetValidation_ConcurrentDeleteStaysDeleted(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		m := newTestManager(t, testKey)
+		acc, err := m.Add("example", "user", "pw", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = m.SetValidation(acc.ID, &plugins.AccountInfo{Valid: true})
+		}()
+		if err := m.Delete(acc.ID); err != nil {
+			t.Fatal(err)
+		}
+		<-done
+
+		reloaded, err := New(m.db, testKey, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := reloaded.Get(acc.ID); ok {
+			t.Fatalf("round %d: deleted account is back after a reload", i)
+		}
+	}
+}
+
+// Toggling an account while its credentials change must not restore the
+// old ciphertext (M4).
+func TestSetEnabled_KeepsConcurrentCredentialUpdate(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		m := newTestManager(t, testKey)
+		acc, err := m.Add("example", "user", "old-pw", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = m.SetEnabled(acc.ID, false)
+		}()
+		if _, err := m.UpdateCredentials(acc.ID, "", "new-pw", nil); err != nil {
+			t.Fatal(err)
+		}
+		<-done
+
+		reloaded, err := New(m.db, testKey, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		creds, err := reloaded.Credentials(acc.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if creds.Password != "new-pw" {
+			t.Fatalf("round %d: password after reload = %q, want new-pw", i, creds.Password)
+		}
+	}
+}
