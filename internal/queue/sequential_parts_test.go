@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"sync"
@@ -25,6 +26,12 @@ func injectQueuedItem(t *testing.T, mgr *Manager, it *Item) {
 	mgr.mu.Unlock()
 }
 
+// pick is pickNext for tests that only look at which item is admitted.
+func pick(mgr *Manager) *Item {
+	it, _ := mgr.pickNext(context.Background())
+	return it
+}
+
 func setState(mgr *Manager, it *Item, s State) {
 	mgr.mu.Lock()
 	it.State = s
@@ -47,17 +54,17 @@ func TestPickNext_SequentialParts_AdmitsLowestNumberedPartFirst(t *testing.T) {
 	part2 := &Item{ID: newID(), PackageID: "pkg1", URL: "http://x/p2", Filename: "movie.part2.rar"}
 	injectQueuedItem(t, mgr, part2)
 
-	first := mgr.pickNext()
+	first := pick(mgr)
 	if first == nil || first.ID != part1.ID {
 		t.Fatalf("first pick = %+v, want part1", first)
 	}
 
 	// Parts may run side by side — they just never overtake each other.
-	second := mgr.pickNext()
+	second := pick(mgr)
 	if second == nil || second.ID != part2.ID {
 		t.Fatalf("second pick = %+v, want part2 (part1 has started)", second)
 	}
-	third := mgr.pickNext()
+	third := pick(mgr)
 	if third == nil || third.ID != part3.ID {
 		t.Fatalf("third pick = %+v, want part3", third)
 	}
@@ -80,19 +87,19 @@ func TestPickNext_SequentialParts_DoesNotBlockUnrelatedPackage(t *testing.T) {
 	other := &Item{ID: newID(), PackageID: "pkg2", URL: "http://x/other", Filename: "readme.txt", Priority: PriorityHigh}
 	injectQueuedItem(t, mgr, other)
 
-	first := mgr.pickNext()
+	first := pick(mgr)
 	if first == nil || first.ID != other.ID {
 		t.Fatalf("first pick = %+v, want the unrelated high-priority single-file item %s", first, other.ID)
 	}
 
 	// part1 is still queued (untouched by the pick above) and unblocked
 	// (nothing lower-numbered in its own group), so it's next.
-	second := mgr.pickNext()
+	second := pick(mgr)
 	if second == nil || second.ID != part1.ID {
 		t.Fatalf("second pick = %+v, want part1 %s", second, part1.ID)
 	}
 
-	third := mgr.pickNext()
+	third := pick(mgr)
 	if third == nil || third.ID != part2.ID {
 		t.Fatalf("third pick = %+v, want part2 %s", third, part2.ID)
 	}
@@ -112,7 +119,7 @@ func TestPickNext_SequentialParts_ErroredLowerPartDoesNotStrandTheRest(t *testin
 	// queue with no way out short of manual intervention.
 	setState(mgr, part1, StateError)
 
-	picked := mgr.pickNext()
+	picked := pick(mgr)
 	if picked == nil || picked.ID != part2.ID {
 		t.Fatalf("picked = %+v, want part2 (part1 errored, so it no longer blocks)", picked)
 	}
@@ -129,7 +136,7 @@ func TestPickNext_SequentialParts_PausedLowerPartDoesNotStrandTheRest(t *testing
 
 	setState(mgr, part1, StatePaused)
 
-	picked := mgr.pickNext()
+	picked := pick(mgr)
 	if picked == nil || picked.ID != part2.ID {
 		t.Fatalf("picked = %+v, want part2 (part1 paused, so it no longer blocks)", picked)
 	}
@@ -147,7 +154,7 @@ func TestPickNext_SequentialParts_LaterPartWaitsForNonRunnableLowerPart(t *testi
 		part2 := &Item{ID: newID(), PackageID: "pkg1", URL: "http://x/p2", Filename: "movie.part2.rar"}
 		injectQueuedItem(t, mgr, part2)
 
-		got := mgr.pickNext()
+		got := pick(mgr)
 		if enabled && got != nil {
 			t.Fatalf("enabled: picked %+v, want nil — part2 must not overtake waiting part1", got)
 		}
@@ -164,7 +171,7 @@ func TestPickNext_SequentialParts_SingleFilePackageUnaffected(t *testing.T) {
 	it := &Item{ID: newID(), PackageID: "pkg1", URL: "http://x/movie.mkv", Filename: "movie.mkv"}
 	injectQueuedItem(t, mgr, it)
 
-	picked := mgr.pickNext()
+	picked := pick(mgr)
 	if picked == nil || picked.ID != it.ID {
 		t.Fatalf("picked = %+v, want the only queued item %s", picked, it.ID)
 	}

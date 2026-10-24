@@ -24,6 +24,7 @@ import (
 	"github.com/simuuh/hopper-downloader/internal/account"
 	"github.com/simuuh/hopper-downloader/internal/clicknload"
 	"github.com/simuuh/hopper-downloader/internal/config"
+	"github.com/simuuh/hopper-downloader/internal/dbschema"
 	"github.com/simuuh/hopper-downloader/internal/downloader"
 	"github.com/simuuh/hopper-downloader/internal/extract"
 	"github.com/simuuh/hopper-downloader/internal/notify"
@@ -114,6 +115,9 @@ func run() error {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer func() { _ = db.Close() }()
+	if err := dbschema.Check(db); err != nil {
+		return err
+	}
 
 	accounts, err := account.New(db, cfg.Accounts.EncryptionKey, log.With("component", "account"))
 	if err != nil {

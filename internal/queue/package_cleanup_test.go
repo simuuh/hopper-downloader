@@ -25,7 +25,7 @@ func TestCancel_LastItemRemovesPackage(t *testing.T) {
 	if n := len(mgr.ListPackages()); n != 0 {
 		t.Fatalf("packages = %d after last item cancelled, want 0", n)
 	}
-	persisted, err := store.ListPackages()
+	persisted, _, err := store.ListPackages()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestNew_DropsOrphanPackages(t *testing.T) {
 	if n := len(mgr.ListPackages()); n != 0 {
 		t.Fatalf("packages = %d, want orphan dropped", n)
 	}
-	persisted, _ := store.ListPackages()
+	persisted, _, _ := store.ListPackages()
 	if len(persisted) != 0 {
 		t.Fatalf("orphan still persisted")
 	}

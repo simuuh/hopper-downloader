@@ -343,19 +343,20 @@ func TestDownload_HosterRateGate_DelaysSecondDownload(t *testing.T) {
 		HosterMinRequestInterval: map[string]time.Duration{"testhoster": 300 * time.Millisecond},
 	})
 
+	// The interval runs from the first download's start, so the second
+	// can't begin before start+300ms however long the first one took.
 	start := time.Now()
 	if _, err := e.Download(context.Background(), Request{URL: srv.URL, RelPath: "a.bin", HosterKey: "testhoster"}); err != nil {
 		t.Fatalf("first download: %v", err)
 	}
 	firstElapsed := time.Since(start)
 
-	start2 := time.Now()
 	if _, err := e.Download(context.Background(), Request{URL: srv.URL, RelPath: "b.bin", HosterKey: "testhoster"}); err != nil {
 		t.Fatalf("second download: %v", err)
 	}
-	secondElapsed := time.Since(start2)
+	total := time.Since(start)
 
-	if secondElapsed < 250*time.Millisecond {
-		t.Errorf("expected second download to be gated by ~300ms hoster interval, took %v (first took %v)", secondElapsed, firstElapsed)
+	if total < 290*time.Millisecond {
+		t.Errorf("both downloads took %v (first %v), want the second gated until ~300ms after the first started", total, firstElapsed)
 	}
 }
