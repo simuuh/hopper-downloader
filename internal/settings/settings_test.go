@@ -350,3 +350,49 @@ func TestUpdateCheck_OffByDefaultAndPersisted(t *testing.T) {
 		t.Error("UpdateCheck not persisted across restart")
 	}
 }
+
+// A failed persist leaves the settings as they were: memory and hooks
+// don't move ahead of the database (M25).
+func TestApply_FailedPersistChangesNothing(t *testing.T) {
+	db := newTestDB(t)
+	hookCalls := 0
+	m, err := New(db, defaultInitial(), Hooks{SetParallelFiles: func(int) { hookCalls++ }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hookCalls = 0
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n := 8
+	if _, err := m.Apply(Update{ParallelFiles: &n}); err == nil {
+		t.Fatal("Apply succeeded with the database closed")
+	}
+	if got := m.Get().ParallelFiles; got != 3 {
+		t.Fatalf("ParallelFiles after a failed Apply = %d, want 3", got)
+	}
+	if hookCalls != 0 {
+		t.Fatalf("hooks ran %d times for a failed Apply", hookCalls)
+	}
+}
+
+// Concurrent updates of different fields both survive: each Apply starts
+// from the previous one's result (M25).
+func TestApply_ConcurrentUpdatesBothApplied(t *testing.T) {
+	m, err := New(newTestDB(t), defaultInitial(), Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, chunks := 7, 9
+	done := make(chan error, 2)
+	go func() { _, err := m.Apply(Update{ParallelFiles: &files}); done <- err }()
+	go func() { _, err := m.Apply(Update{ParallelChunks: &chunks}); done <- err }()
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := m.Get(); got.ParallelFiles != 7 || got.ParallelChunks != 9 {
+		t.Fatalf("after two concurrent updates: files %d chunks %d, want 7 and 9", got.ParallelFiles, got.ParallelChunks)
+	}
+}

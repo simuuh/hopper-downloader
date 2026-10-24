@@ -115,8 +115,10 @@ type Manager struct {
 	db    *bbolt.DB
 	hooks Hooks
 
-	mu  sync.RWMutex
-	cur Settings
+	// applyMu serializes Apply; mu guards cur for readers.
+	applyMu sync.Mutex
+	mu      sync.RWMutex
+	cur     Settings
 }
 
 // New opens (creating if necessary) the settings bucket and loads any
@@ -190,45 +192,47 @@ func (m *Manager) Get() Settings {
 // rejects the whole Update — nothing is applied or persisted — rather
 // than silently applying the valid subset.
 func (m *Manager) Apply(u Update) (Settings, error) {
-	m.mu.Lock()
+	// One Apply at a time from validation through the hooks, and memory
+	// changes only after the write succeeded: concurrent updates used to
+	// interleave their persist and hook calls (database, memory and the
+	// live components ending up with different values), and a failed
+	// persist left memory changed although the call reported an error.
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	m.mu.RLock()
 	next := m.cur
+	m.mu.RUnlock()
 
 	if u.DownloadPath != nil {
 		path := strings.TrimSpace(*u.DownloadPath)
 		if path == "" {
-			m.mu.Unlock()
 			return Settings{}, fmt.Errorf("download_path must not be empty")
 		}
 		if err := validateDownloadPath(path); err != nil {
-			m.mu.Unlock()
 			return Settings{}, err
 		}
 		next.DownloadPath = path
 	}
 	if u.ParallelFiles != nil {
 		if *u.ParallelFiles < 1 || *u.ParallelFiles > 10 {
-			m.mu.Unlock()
 			return Settings{}, fmt.Errorf("parallel_files must be between 1 and 10, got %d", *u.ParallelFiles)
 		}
 		next.ParallelFiles = *u.ParallelFiles
 	}
 	if u.ParallelChunks != nil {
 		if *u.ParallelChunks < 1 || *u.ParallelChunks > 16 {
-			m.mu.Unlock()
 			return Settings{}, fmt.Errorf("parallel_chunks must be between 1 and 16, got %d", *u.ParallelChunks)
 		}
 		next.ParallelChunks = *u.ParallelChunks
 	}
 	if u.BandwidthLimit != nil {
 		if *u.BandwidthLimit < 0 {
-			m.mu.Unlock()
 			return Settings{}, fmt.Errorf("bandwidth_limit must be >= 0, got %d", *u.BandwidthLimit)
 		}
 		next.BandwidthLimit = *u.BandwidthLimit
 	}
 	if u.RetryMax != nil {
 		if *u.RetryMax < 0 || *u.RetryMax > 10 {
-			m.mu.Unlock()
 			return Settings{}, fmt.Errorf("retry_max must be between 0 and 10, got %d", *u.RetryMax)
 		}
 		next.RetryMax = *u.RetryMax
@@ -240,7 +244,6 @@ func (m *Manager) Apply(u Update) (Settings, error) {
 		switch *u.DefaultPriority {
 		case "low", "normal", "high":
 		default:
-			m.mu.Unlock()
 			return Settings{}, fmt.Errorf("default_priority must be one of low|normal|high, got %q", *u.DefaultPriority)
 		}
 		next.DefaultPriority = *u.DefaultPriority
@@ -249,7 +252,6 @@ func (m *Manager) Apply(u Update) (Settings, error) {
 		switch *u.LogLevel {
 		case "debug", "info", "warn", "error":
 		default:
-			m.mu.Unlock()
 			return Settings{}, fmt.Errorf("log_level must be one of debug|info|warn|error, got %q", *u.LogLevel)
 		}
 		next.LogLevel = *u.LogLevel
@@ -266,7 +268,6 @@ func (m *Manager) Apply(u Update) (Settings, error) {
 	if u.AccountPriority != nil {
 		order, err := normalizeAccountPriority(u.AccountPriority)
 		if err != nil {
-			m.mu.Unlock()
 			return Settings{}, err
 		}
 		next.AccountPriority = order
@@ -275,12 +276,12 @@ func (m *Manager) Apply(u Update) (Settings, error) {
 		next.UpdateCheck = *u.UpdateCheck
 	}
 
-	m.cur = next
-	m.mu.Unlock()
-
 	if err := m.persist(next); err != nil {
 		return Settings{}, err
 	}
+	m.mu.Lock()
+	m.cur = next
+	m.mu.Unlock()
 	m.applyHooks(next)
 	return next, nil
 }
