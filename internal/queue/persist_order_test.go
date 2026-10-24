@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -52,5 +53,54 @@ func TestReorder_PublishesMovedItems(t *testing.T) {
 	}
 	if got[b.ID] != 0 || got[a.ID] != 1 {
 		t.Fatalf("published positions %v, want b=0 a=1", got)
+	}
+}
+
+// A pasted list goes into the database in one transaction: all items in
+// their order, or none of them when the write fails (M27).
+func TestAddLinks_PersistsAllOrNothing(t *testing.T) {
+	store := newTestStore(t)
+	mgr, _ := newTestManager(t, store, Config{ParallelFiles: 1})
+	links := make([]LinkInput, 50)
+	for i := range links {
+		links[i] = LinkInput{URL: fmt.Sprintf("https://host.example/file%02d.bin", i)}
+	}
+	if _, err := mgr.AddLinks(links, "list", AddOptions{StartPaused: true}); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, err := store.ListItems()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != len(links) {
+		t.Fatalf("%d items in the database, want %d", len(stored), len(links))
+	}
+	byURL := map[string]int64{}
+	for _, it := range stored {
+		byURL[it.URL] = it.Position
+	}
+	for i := 1; i < len(links); i++ {
+		if byURL[links[i].URL] <= byURL[links[i-1].URL] {
+			t.Fatalf("link %d stored at position %d, not after link %d (%d)", i, byURL[links[i].URL], i-1, byURL[links[i-1].URL])
+		}
+	}
+
+	if err := store.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before := len(mgr.List())
+	var batch []*Item
+	for _, u := range []string{"https://host.example/a.bin", "https://host.example/b.bin"} {
+		it, err := mgr.newItem("", u, AddOptions{StartPaused: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		batch = append(batch, it)
+	}
+	if _, err := mgr.insertItems(batch); err == nil {
+		t.Fatal("insertItems succeeded with the database closed")
+	}
+	if after := len(mgr.List()); after != before {
+		t.Fatalf("%d items in the queue after a failed add, want %d", after, before)
 	}
 }

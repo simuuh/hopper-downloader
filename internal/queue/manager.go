@@ -2127,26 +2127,26 @@ func (m *Manager) addExpandedItems(pkgID string, links []plugins.ExpandedLink, o
 		}
 	}
 
-	items := make([]*Item, 0, len(links))
+	batch := make([]*Item, 0, len(links))
 	var firstErr error
 	for _, l := range links {
 		itemOpts := opts
 		itemOpts.Filename = l.Name
 		itemOpts.Password = l.Password
 		itemOpts.Size = l.Size
-		it, err := m.addPlainItem(pkgID, l.URL, itemOpts)
+		it, err := m.newItem(pkgID, l.URL, itemOpts)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
-		items = append(items, it)
+		batch = append(batch, it)
 	}
-	if len(items) == 0 {
+	if len(batch) == 0 {
 		return nil, fmt.Errorf("queue: expansion produced no valid items: %w", firstErr)
 	}
-	return items, nil
+	return m.insertItems(batch)
 }
 
 // packageNameFromLinks derives a package name for a newly-expanded
@@ -2163,9 +2163,23 @@ func packageNameFromLinks(links []plugins.ExpandedLink) string {
 }
 
 // addPlainItem is the original single-URL-in/single-item-out insertion
-// logic: build one Item for rawURL and enqueue it. Used directly for the
-// common case, and once per link by addExpandedItems.
+// logic: build one Item for rawURL and enqueue it.
 func (m *Manager) addPlainItem(pkgID, rawURL string, opts AddOptions) (*Item, error) {
+	it, err := m.newItem(pkgID, rawURL, opts)
+	if err != nil {
+		return nil, err
+	}
+	items, err := m.insertItems([]*Item{it})
+	if err != nil {
+		return nil, err
+	}
+	return items[0], nil
+}
+
+// newItem validates rawURL and builds its Item (not yet queued; see
+// insertItems). Hoster matching may hit the network, so it runs here,
+// outside m.mu.
+func (m *Manager) newItem(pkgID, rawURL string, opts AddOptions) (*Item, error) {
 	if err := validHTTPURL(rawURL); err != nil {
 		return nil, err
 	}
@@ -2183,7 +2197,7 @@ func (m *Manager) addPlainItem(pkgID, rawURL string, opts AddOptions) (*Item, er
 	}
 
 	now := time.Now()
-	it := &Item{
+	return &Item{
 		ID:          newID(),
 		PackageID:   pkgID,
 		URL:         rawURL,
@@ -2196,36 +2210,60 @@ func (m *Manager) addPlainItem(pkgID, rawURL string, opts AddOptions) (*Item, er
 		ScheduledAt: opts.ScheduledAt,
 		CreatedAt:   now,
 		UpdatedAt:   now,
-	}
+	}, nil
+}
 
-	// Persisted and snapshotted under the lock: once it is in m.items a
-	// concurrent dispatch can pick it up and mutate it, so neither the
-	// store write nor the published event/return value may read the live
-	// pointer afterwards.
+// insertItems queues items in the given order, persisted in a single
+// transaction: one disk sync for a whole pasted list or container instead
+// of one per link while m.mu is held. Returns snapshots.
+func (m *Manager) insertItems(items []*Item) ([]*Item, error) {
+	// Persisted and snapshotted under the lock: once an item is in
+	// m.items a concurrent dispatch can pick it up and mutate it, so
+	// neither the store write nor the published event/return value may
+	// read the live pointer afterwards.
 	m.mu.Lock()
-	it.Position = m.posSeq
-	if err := m.store.PutItem(it); err != nil {
+	for i, it := range items {
+		it.Position = m.posSeq + int64(i)
+	}
+	if err := m.store.PutItems(items); err != nil {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("queue: persist item: %w", err)
 	}
-	m.posSeq++
-	m.items[it.ID] = it
-	cp := *it
+	m.posSeq += int64(len(items))
+	out := make([]*Item, len(items))
+	for i, it := range items {
+		m.items[it.ID] = it
+		cp := *it
+		out[i] = &cp
+	}
 	m.mu.Unlock()
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+
+	for _, cp := range out {
+		m.publish(Event{Type: EventItemUpdated, Item: cp})
+	}
 
 	m.runMu.Lock()
 	runCtx := m.runCtx
 	m.runMu.Unlock()
 	if runCtx != nil {
-		if cp.ScheduledAt != nil && cp.ScheduledAt.After(now) {
-			m.armSchedule(runCtx, *cp.ScheduledAt)
-		} else {
+		now := time.Now()
+		armed := map[time.Time]bool{}
+		wake := false
+		for _, cp := range out {
+			if cp.ScheduledAt != nil && cp.ScheduledAt.After(now) {
+				if !armed[*cp.ScheduledAt] {
+					armed[*cp.ScheduledAt] = true
+					m.armSchedule(runCtx, *cp.ScheduledAt)
+				}
+			} else {
+				wake = true
+			}
+		}
+		if wake {
 			m.wakeAsync()
 		}
 	}
-
-	return &cp, nil
+	return out, nil
 }
 
 // requeue transitions id from any of fromStates into StateQueued.
@@ -2263,17 +2301,23 @@ func (m *Manager) requeueMany(ids []string, fromStates ...State) (int, []error) 
 		}
 		// A manual resume/retry starts a fresh automatic-retry budget and
 		// shouldn't sit out a leftover auto-retry wait.
-		it.Attempts = 0
-		it.RetryAfter = nil
-		it.State = StateQueued
-		it.Error = ""
-		it.UpdatedAt = now
-		if err := m.store.PutItem(it); err != nil {
-			errs = append(errs, fmt.Errorf("queue: persist item: %w", err))
-			continue
-		}
 		cp := *it
+		cp.Attempts = 0
+		cp.RetryAfter = nil
+		cp.State = StateQueued
+		cp.Error = ""
+		cp.UpdatedAt = now
 		updated = append(updated, &cp)
+	}
+	// One transaction for all of them, applied to memory only once it is
+	// written, so a failure changes nothing.
+	if err := m.store.PutItems(updated); err != nil {
+		m.mu.Unlock()
+		return 0, append(errs, fmt.Errorf("queue: persist items: %w", err))
+	}
+	for _, cp := range updated {
+		it := m.items[cp.ID]
+		it.Attempts, it.RetryAfter, it.State, it.Error, it.UpdatedAt = 0, nil, StateQueued, "", now
 	}
 	m.mu.Unlock()
 
