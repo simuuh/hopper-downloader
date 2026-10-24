@@ -171,7 +171,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// A dedicated, much stricter per-IP budget than the general API rate
 	// limit: bcrypt makes each guess slow, this caps how many guesses a
 	// single client gets at all.
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if !s.loginLimiters.get(ip).Allow() {
 		s.log.Warn("api: login rate limit exceeded", "remote_ip", ip)
 		writeError(w, http.StatusTooManyRequests, "too many login attempts, try again later")

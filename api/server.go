@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -105,6 +106,9 @@ type Config struct {
 	// (config.ServerConfig).
 	TLSCertFile string
 	TLSKeyFile  string
+	// TrustedProxies are the reverse proxies (CIDRs) whose
+	// X-Forwarded-For is believed (config.ServerConfig); see clientIP.
+	TrustedProxies []string
 	// DLCEnabled gates .dlc file imports (config.DLC.Enabled); plaintext
 	// link-list imports are always available.
 	DLCEnabled bool
@@ -149,6 +153,7 @@ type Server struct {
 	// may take (see readDeadline); fields so tests can shorten them.
 	bodyTimeout       time.Duration
 	importBodyTimeout time.Duration
+	trustedProxies    []netip.Prefix
 }
 
 // Per-request read deadlines (see readDeadline). Generous: they only
@@ -193,6 +198,13 @@ func New(cfg Config, q QueueService, acc AccountService, pl PluginService, st Se
 
 		bodyTimeout:       bodyReadTimeout,
 		importBodyTimeout: importBodyReadTimeout,
+	}
+	for _, cidr := range cfg.TrustedProxies {
+		if p, err := netip.ParsePrefix(cidr); err == nil {
+			s.trustedProxies = append(s.trustedProxies, p.Masked())
+		} else {
+			log.Warn("api: ignoring invalid trusted proxy", "cidr", cidr, "error", err)
+		}
 	}
 	s.upgrader = websocket.Upgrader{
 		ReadBufferSize:  4096,

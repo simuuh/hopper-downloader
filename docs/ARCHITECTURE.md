@@ -420,8 +420,11 @@ A valid re-check, a credential update or re-enabling ends the cooldown.
   (24 h) is the expiry. `POST /auth/refresh` extends a *valid* token but
   keeps its login time (`auth_time`): after 30 days (or `token_ttl`, if
   longer) the session ends. Tokens carry `pwv`, an HMAC of the password
-  hash, so a password change revokes them. Login has its own per-IP budget (5, then 10/min); failed
-  attempts are logged with the client IP (fail2ban-friendly).
+  hash, so a password change revokes them. Login has its own per-IP
+  budget (5, then 10/min); failed attempts are logged with the client IP
+  (fail2ban-friendly). Behind a reverse proxy, `server.trusted_proxies`
+  makes both go by the client in `X-Forwarded-For` (rightmost entry that
+  isn't a trusted proxy) instead of the proxy's address.
 - The WebSocket authenticates via `Sec-WebSocket-Protocol: hopper.bearer,
   <jwt>` (not the URL, which ends up in proxy logs; `?token=` remains a
   fallback), closes when the token expires and accepts at most 4 KiB

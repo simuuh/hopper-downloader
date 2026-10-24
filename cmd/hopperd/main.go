@@ -344,6 +344,7 @@ func run() error {
 		ReadHeaderTimeout:  cfg.Server.ReadHeaderTimeout,
 		TLSCertFile:        cfg.Server.TLSCertFile,
 		TLSKeyFile:         cfg.Server.TLSKeyFile,
+		TrustedProxies:     cfg.Server.TrustedProxies,
 		DLCEnabled:         cfg.DLC.Enabled,
 		DLCAPIURL:          cfg.DLC.JDAPIURL,
 		ReferralLinks:      cfg.Accounts.ReferralLinks,

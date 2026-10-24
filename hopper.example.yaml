@@ -32,6 +32,10 @@ server:
   # tab left open across days.
   token_ttl: 24h
   cors_allowed_origins: []
+  # Behind a reverse proxy: its address(es), so rate limits and login
+  # logs see the real client from X-Forwarded-For instead of the proxy
+  # (env HOPPER_TRUSTED_PROXIES, comma-separated).
+  # trusted_proxies: ["172.16.0.0/12"]
   read_header_timeout: 10s
   # Serve the API and Web UI over HTTPS (both or neither; env
   # HOPPER_TLS_CERT_FILE / HOPPER_TLS_KEY_FILE). Without them the
