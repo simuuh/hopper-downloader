@@ -15,6 +15,8 @@ import (
 	"sync"
 
 	"go.etcd.io/bbolt"
+
+	"github.com/simuuh/hopper-downloader/internal/pathsafe"
 )
 
 var (
@@ -119,6 +121,20 @@ type Manager struct {
 	applyMu sync.Mutex
 	mu      sync.RWMutex
 	cur     Settings
+
+	// protectedDirs (see ProtectDirs) may not become the download path
+	// or lie below it.
+	protectedDirs []string
+}
+
+// ProtectDirs names directories the download path must stay out of —
+// hopperd's database and secrets directory: downloads and extractions
+// write anywhere below the download path and could otherwise replace
+// hopper.db or secrets.json. Call it before the API starts serving.
+func (m *Manager) ProtectDirs(dirs ...string) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	m.protectedDirs = append(m.protectedDirs, dirs...)
 }
 
 // New opens (creating if necessary) the settings bucket and loads any
@@ -207,6 +223,11 @@ func (m *Manager) Apply(u Update) (Settings, error) {
 		path := strings.TrimSpace(*u.DownloadPath)
 		if path == "" {
 			return Settings{}, fmt.Errorf("download_path must not be empty")
+		}
+		for _, dir := range m.protectedDirs {
+			if pathsafe.Contains(path, dir) {
+				return Settings{}, fmt.Errorf("download_path %q would contain hopperd's own data directory %q; choose a separate folder", path, dir)
+			}
 		}
 		if err := validateDownloadPath(path); err != nil {
 			return Settings{}, err

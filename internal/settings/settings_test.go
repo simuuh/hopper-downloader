@@ -396,3 +396,28 @@ func TestApply_ConcurrentUpdatesBothApplied(t *testing.T) {
 		t.Fatalf("after two concurrent updates: files %d chunks %d, want 7 and 9", got.ParallelFiles, got.ParallelChunks)
 	}
 }
+
+// The download path can't be set to hopperd's data directory or a parent
+// of it: downloads could overwrite hopper.db or secrets.json (N9e).
+func TestApply_RefusesDownloadPathContainingDataDir(t *testing.T) {
+	m, err := New(newTestDB(t), defaultInitial(), Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := t.TempDir()
+	dataDir := filepath.Join(parent, "config")
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	m.ProtectDirs(dataDir)
+
+	for _, p := range []string{parent, dataDir} {
+		if _, err := m.Apply(Update{DownloadPath: &p}); err == nil {
+			t.Errorf("download_path %q accepted although it contains the data directory", p)
+		}
+	}
+	elsewhere := t.TempDir()
+	if _, err := m.Apply(Update{DownloadPath: &elsewhere}); err != nil {
+		t.Errorf("separate download_path refused: %v", err)
+	}
+}

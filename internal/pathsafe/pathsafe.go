@@ -8,6 +8,7 @@ package pathsafe
 import (
 	"errors"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"unicode/utf8"
 )
@@ -98,4 +99,18 @@ func truncateFilename(name string, max int) string {
 		limit--
 	}
 	return stem[:limit] + ext
+}
+
+// Contains reports whether target is dir itself or lies below it, after
+// cleaning both (no symlink resolution). Case-insensitive on Windows.
+func Contains(dir, target string) bool {
+	dir, target = filepath.Clean(dir), filepath.Clean(target)
+	if runtime.GOOS == "windows" {
+		dir, target = strings.ToLower(dir), strings.ToLower(target)
+	}
+	rel, err := filepath.Rel(dir, target)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }

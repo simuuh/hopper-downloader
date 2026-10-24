@@ -90,3 +90,24 @@ func TestSanitizeFilename_TruncatesLongNamesKeepingExtension(t *testing.T) {
 		t.Fatalf("got %q, want valid UTF-8 ending in .rar", got)
 	}
 }
+
+func TestContains(t *testing.T) {
+	sep := string(filepath.Separator)
+	base := filepath.Join(sep+"data", "hopper")
+	cases := []struct {
+		dir, target string
+		want        bool
+	}{
+		{base, base, true},
+		{base, filepath.Join(base, "sub"), true},
+		{base, filepath.Join(base, "..", "hopper", "x"), true},
+		{base, filepath.Join(sep+"data", "hopper-other"), false},
+		{base, filepath.Join(sep + "data"), false},
+		{filepath.Join(sep + "data"), base, true},
+	}
+	for _, c := range cases {
+		if got := Contains(c.dir, c.target); got != c.want {
+			t.Errorf("Contains(%q, %q) = %v, want %v", c.dir, c.target, got, c.want)
+		}
+	}
+}

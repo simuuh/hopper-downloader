@@ -28,6 +28,7 @@ import (
 	"github.com/simuuh/hopper-downloader/internal/downloader"
 	"github.com/simuuh/hopper-downloader/internal/extract"
 	"github.com/simuuh/hopper-downloader/internal/notify"
+	"github.com/simuuh/hopper-downloader/internal/pathsafe"
 	"github.com/simuuh/hopper-downloader/internal/queue"
 	"github.com/simuuh/hopper-downloader/internal/scheduler"
 	"github.com/simuuh/hopper-downloader/internal/settings"
@@ -284,6 +285,16 @@ func run() error {
 	})
 	if err != nil {
 		return fmt.Errorf("init settings manager: %w", err)
+	}
+	if dataDir, err := filepath.Abs(filepath.Dir(cfg.Database.Path)); err == nil {
+		settingsMgr.ProtectDirs(dataDir)
+		// Only a warning for the configured path, so an existing install
+		// laid out this way still starts; changing it in the Web UI to
+		// such a path is refused.
+		if pathsafe.Contains(settingsMgr.Get().DownloadPath, dataDir) {
+			log.Warn("download path contains hopperd's database and secrets directory; a download or extraction could overwrite hopper.db or secrets.json — move one of them",
+				"download_path", settingsMgr.Get().DownloadPath, "data_dir", dataDir)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
