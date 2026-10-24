@@ -318,7 +318,12 @@ export function ItemRow({
             ✎
           </button>
         )}
-        <button className="icon-btn danger" title="Cancel" onClick={() => onAction(item.id, 'cancel')}>
+        <button
+          className="icon-btn danger"
+          title={item.extract_state === 'extracting' ? "Can't remove while it's being extracted" : 'Cancel'}
+          disabled={item.extract_state === 'extracting'}
+          onClick={() => onAction(item.id, 'cancel')}
+        >
           <i className="ti ti-x" />
         </button>
       </div>
