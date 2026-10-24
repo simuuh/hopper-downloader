@@ -6,6 +6,7 @@ import { PageHeader } from '../components/Page'
 import { NARROW_SCREEN, useMediaQuery } from '../hooks/useMediaQuery'
 import { literalText } from '../lib/inputProps'
 import { api, ApiError, setToken, tokenNearExpiry } from '../lib/api'
+import { isFinished, needsAttention } from '../lib/finished'
 import { formatBytes, formatCountdown, formatSpeed, itemName } from '../lib/format'
 import { finishedLast, groupCount, groupKeyOf, sortQueue } from '../lib/order'
 import { packageProgress } from '../lib/progress'
@@ -51,13 +52,10 @@ function formatFinished(ms: number): string {
   return isToday(d.toISOString()) ? `today ${time}` : `${d.toLocaleDateString()} ${time}`
 }
 
-// extractSummary rolls a group's archive state up into one word for the
-// finished view: failed wins, then extracted; null when nothing was
-// extracted (no archives, or auto-extract off).
-function extractSummary(items: QueueItem[]): 'extracted' | 'extract_failed' | null {
-  if (items.some((i) => i.extract_state === 'extract_failed')) return 'extract_failed'
-  if (items.some((i) => i.extract_state === 'extracted')) return 'extracted'
-  return null
+// hasExtracted marks a finished group that contains extracted archives
+// (a failed extraction keeps the group out of the finished view).
+function hasExtracted(items: QueueItem[]): boolean {
+  return items.some((i) => i.extract_state === 'extracted')
 }
 
 function worstState(items: QueueItem[]): ItemState {
@@ -69,10 +67,17 @@ function worstState(items: QueueItem[]): ItemState {
 
 // groupBadge is the package header's state label: like worstState, but a
 // package that is only paused because it was never started (e.g. an
-// import with auto-start off) reads 'ready' rather than 'paused'.
+// import with auto-start off) reads 'ready' rather than 'paused', and one
+// that is downloaded but not yet (successfully) extracted doesn't read
+// 'done'.
 function groupBadge(items: QueueItem[]): string {
   const s = worstState(items)
   if (s === 'paused' && items.filter((i) => i.state === 'paused').every((i) => i.downloaded === 0)) return 'ready'
+  if (s === 'done' && !items.every(isFinished)) {
+    if (items.some((i) => i.extract_state === 'extract_failed')) return 'error'
+    if (items.some((i) => i.extract_state === 'extracting')) return 'extracting'
+    return 'waiting'
+  }
   return s
 }
 
@@ -129,7 +134,7 @@ export function QueuePage({
     for (const i of items) {
       const key = groupKeyOf(i)
       all.add(key)
-      if (i.state !== 'done') unfinished.add(key)
+      if (!isFinished(i)) unfinished.add(key)
     }
     return new Set([...all].filter((k) => !unfinished.has(k)))
   }, [items])
@@ -139,7 +144,7 @@ export function QueuePage({
       all: () => true,
       active: (i) => ACTIVE_STATES.includes(i.state),
       done: (i) => finishedKeys.has(groupKeyOf(i)),
-      errors: (i) => i.state === 'error',
+      errors: needsAttention,
     }),
     [finishedKeys],
   )
@@ -350,8 +355,7 @@ export function QueuePage({
   }
 
   async function clearDone() {
-    const doneIds = items.filter((i) => i.state === 'done').map((i) => i.id)
-    await bulkCancel(doneIds)
+    await bulkCancel(items.filter(isFinished).map((i) => i.id))
   }
 
   async function setPriority(id: string, priority: QueueItem['priority']) {
@@ -509,15 +513,15 @@ export function QueuePage({
     () => ({
       downloading: items.filter((i) => i.state === 'downloading').length,
       queued: items.filter((i) => i.state === 'queued').length,
-      doneToday: items.filter((i) => i.state === 'done' && isToday(i.updated_at)).length,
-      errors: items.filter((i) => i.state === 'error').length,
+      doneToday: items.filter((i) => isFinished(i) && isToday(i.updated_at)).length,
+      errors: items.filter(needsAttention).length,
     }),
     [items],
   )
 
   const hasActiveItems = items.some((i) => i.state === 'queued' || i.state === 'downloading')
   const pausedCount = items.filter((i) => i.state === 'paused').length
-  const hasDoneItems = items.some((i) => i.state === 'done')
+  const finishedCount = items.filter(isFinished).length
 
   return (
     <>
@@ -642,7 +646,7 @@ export function QueuePage({
             {filterCounts[key] > 0 && <span className="filter-count">{filterCounts[key]}</span>}
           </button>
         ))}
-        {hasDoneItems && (
+        {finishedCount > 0 && (
           <button type="button" className="btn small" disabled={busy} onClick={() => void clearDone()}>
             Clear done
           </button>
@@ -667,8 +671,8 @@ export function QueuePage({
           {groups.map((group) => {
             const single = narrow && group.items.length === 1
             const isCollapsed = !single && (filter === 'done' ? !expanded.has(group.key) : collapsed.has(group.key))
-            const isFinished = finishedKeys.has(group.key)
-            const extracted = isFinished ? extractSummary(group.items) : null
+            const groupFinished = finishedKeys.has(group.key)
+            const extracted = groupFinished && hasExtracted(group.items)
             const state = worstState(group.items)
             const badge = groupBadge(group.items)
             const pkgId = group.items[0]?.package_id
@@ -699,19 +703,15 @@ export function QueuePage({
                       {formatBytes(totalSize)}
                       {groupSpeed > 0 && ` · ${formatSpeed(groupSpeed)}`}
                       {etaSeconds > 0 && ` · ETA ${formatCountdown(etaSeconds)}`}
-                      {isFinished && ` · finished ${formatFinished(finishedAt(group.items))}`}
-                      {isFinished && pkgId && ` · ${packagesById.get(pkgId)?.path || group.name}/`}
+                      {groupFinished && ` · finished ${formatFinished(finishedAt(group.items))}`}
+                      {groupFinished && pkgId && ` · ${packagesById.get(pkgId)?.path || group.name}/`}
                     </span>
                     {(totalSize > 0 || doneCount > 0) && (
                       <span className="pkg-progress" title={`${Math.round(percent)}%`}>
                         <span className={`progress-fill state-${state}`} style={{ width: `${percent}%` }} />
                       </span>
                     )}
-                    {extracted && (
-                      <span className={`badge ${extracted === 'extracted' ? 'state-done' : 'state-error'}`}>
-                        {extracted === 'extracted' ? 'extracted' : 'extract failed'}
-                      </span>
-                    )}
+                    {extracted && <span className="badge state-done">extracted</span>}
                     <span className={`badge state-${badge}`}>{badge}</span>
                     {pkgId && (
                       <span className="pkg-actions" onClick={stop} onKeyDown={stop}>

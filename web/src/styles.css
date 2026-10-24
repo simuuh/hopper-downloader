@@ -850,6 +850,9 @@ textarea.url-input {
   text-overflow: ellipsis;
   margin-top: 1px;
 }
+.item-extract-status.pending {
+  color: var(--text-dim);
+}
 .item-extract-status.queued {
   color: var(--state-waiting);
 }
@@ -1103,6 +1106,12 @@ textarea.url-input {
 }
 .badge.state-captcha {
   color: var(--state-captcha);
+}
+.badge.state-downloaded {
+  color: var(--text-dim);
+}
+.badge.state-extracting {
+  color: var(--accent);
 }
 
 /* .progress-meta is also used by SettingsPage.tsx (generic small/faint

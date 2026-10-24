@@ -44,6 +44,10 @@ export function notifyItemError(item: QueueItem): void {
   notify(itemName(item), truncate(item.error || 'error', 120))
 }
 
+export function notifyExtractFailed(item: QueueItem): void {
+  notify(itemName(item), truncate(`extract failed: ${item.extract_error || 'unknown error'}`, 120))
+}
+
 export function notifyPackageComplete(packageName: string, fileCount: number): void {
   notify(packageName, `package complete — ${fileCount} file${fileCount === 1 ? '' : 's'}`)
 }
