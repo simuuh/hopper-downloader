@@ -65,11 +65,12 @@ function deriveTarget(targetUrl, port) {
 }
 
 async function getSyncSettings() {
-  const { targetUrl, dlcInterceptionEnabled } = await chrome.storage.sync.get({
+  const { targetUrl, dlcInterceptionEnabled, txtInterceptionEnabled } = await chrome.storage.sync.get({
     targetUrl: 'http://localhost:9667',
     dlcInterceptionEnabled: true,
+    txtInterceptionEnabled: false,
   });
-  return { targetUrl, dlcInterceptionEnabled };
+  return { targetUrl, dlcInterceptionEnabled, txtInterceptionEnabled };
 }
 
 async function getApiToken() {
@@ -236,19 +237,18 @@ function basename(path) {
   return path.split(/[\\/]/).pop();
 }
 
-function isImportCandidate(filename) {
+// .dlc files are always link containers. A .txt file is usually just a
+// text file — a README, a log, notes — that happens to contain a URL, so
+// taking it away from the user is opt-in (txtInterceptionEnabled).
+function isImportCandidate(filename, txtInterceptionEnabled) {
   const lower = filename.toLowerCase();
-  return lower.endsWith('.dlc') || lower.endsWith('.txt');
+  return lower.endsWith('.dlc') || (txtInterceptionEnabled && lower.endsWith('.txt'));
 }
 
 chrome.downloads.onCreated.addListener(async (item) => {
   const filename = basename(item.filename || '');
-  if (!isImportCandidate(filename)) {
-    return;
-  }
-
-  const { targetUrl, dlcInterceptionEnabled } = await getSyncSettings();
-  if (!dlcInterceptionEnabled) {
+  const { targetUrl, dlcInterceptionEnabled, txtInterceptionEnabled } = await getSyncSettings();
+  if (!dlcInterceptionEnabled || !isImportCandidate(filename, txtInterceptionEnabled)) {
     return;
   }
 

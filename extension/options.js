@@ -3,18 +3,21 @@ const DEFAULT_TARGET = 'http://localhost:9667';
 const targetInput = document.getElementById('target-url');
 const tokenInput = document.getElementById('api-token');
 const dlcEnabledInput = document.getElementById('dlc-enabled');
+const txtEnabledInput = document.getElementById('txt-enabled');
 const saveStatus = document.getElementById('save-status');
 const form = document.getElementById('settings-form');
 
 async function load() {
-  const { targetUrl, dlcInterceptionEnabled } = await chrome.storage.sync.get({
+  const { targetUrl, dlcInterceptionEnabled, txtInterceptionEnabled } = await chrome.storage.sync.get({
     targetUrl: DEFAULT_TARGET,
     dlcInterceptionEnabled: true,
+    txtInterceptionEnabled: false,
   });
   const { apiToken } = await chrome.storage.local.get({ apiToken: '' });
 
   targetInput.value = targetUrl;
   dlcEnabledInput.checked = dlcInterceptionEnabled;
+  txtEnabledInput.checked = txtInterceptionEnabled;
   tokenInput.value = apiToken;
 }
 
@@ -41,6 +44,7 @@ form.addEventListener('submit', async (e) => {
   await chrome.storage.sync.set({
     targetUrl,
     dlcInterceptionEnabled: dlcEnabledInput.checked,
+    txtInterceptionEnabled: txtEnabledInput.checked,
   });
   await chrome.storage.local.set({ apiToken: tokenInput.value.trim() });
 
