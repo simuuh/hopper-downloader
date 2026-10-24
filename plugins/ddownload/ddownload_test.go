@@ -190,6 +190,11 @@ func TestFetchDownloadURL_NoWorkingMechanism(t *testing.T) {
 	if !errors.Is(err, plugins.ErrUnavailable) {
 		t.Errorf("err = %v, want it to wrap plugins.ErrUnavailable", err)
 	}
+	// ErrUnsupportedHost makes the queue try the next plugin (a debrid
+	// service) instead of failing every ddownload link.
+	if !errors.Is(err, plugins.ErrUnsupportedHost) {
+		t.Errorf("err = %v, want it to wrap plugins.ErrUnsupportedHost", err)
+	}
 }
 
 func TestFetchDownloadURL_NoAccountConfigured(t *testing.T) {

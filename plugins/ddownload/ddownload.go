@@ -236,13 +236,17 @@ func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo
 // the only real free/anonymous download path found is Turnstile-gated,
 // which this plugin architecture has no way to automate or honestly
 // represent.
+//
+// The error wraps plugins.ErrUnsupportedHost so the queue hands the link
+// to the next matching plugin (a debrid service that supports
+// ddownload.com) instead of retrying a download that can't ever work.
 func (p *Plugin) FetchDownloadURL(rawURL string, acc *plugins.Account) (string, error) {
 	if p.keyFrom(acc) == "" {
 		return "", plugins.ErrAccountRequired
 	}
 	return "", fmt.Errorf(
-		"%s: %w: no working download-URL mechanism found for this hoster — the API has no download-URL endpoint, and the web flow requires solving a Cloudflare Turnstile challenge no automated client can pass (see FetchDownloadURL's doc comment)",
-		pluginName, plugins.ErrUnavailable,
+		"%s: %w (%w): no working download-URL mechanism found for this hoster — the API has no download-URL endpoint, and the web flow requires solving a Cloudflare Turnstile challenge no automated client can pass (see FetchDownloadURL's doc comment)",
+		pluginName, plugins.ErrUnsupportedHost, plugins.ErrUnavailable,
 	)
 }
 
