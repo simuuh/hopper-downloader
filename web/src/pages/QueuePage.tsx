@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type DragEvent } from 'react'
 import { AddLinkForm } from '../components/AddLinkForm'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { PromptDialog } from '../components/PromptDialog'
 import { ImportDropzone } from '../components/ImportDropzone'
 import { ItemRow } from '../components/ItemRow'
 import { PageHeader } from '../components/Page'
@@ -102,6 +103,8 @@ export function QueuePage({
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [confirmClear, setConfirmClear] = useState<'done' | 'all' | null>(null)
+  const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null)
+  const [removing, setRemoving] = useState<{ id: string; name: string; items: QueueItem[] } | null>(null)
   // info is a neutral (non-error) toast for confirmations.
   const [info, setInfo] = useState<string | null>(() =>
     sharedText ? 'Shared links are in the add field — review them and press Add.' : null,
@@ -435,9 +438,8 @@ export function QueuePage({
     }
   }
 
-  async function renamePackage(id: string, current: string) {
-    const name = window.prompt('Package name', current)?.trim()
-    if (!name || name === current) return
+  async function renamePackage(id: string, current: string, name: string) {
+    if (name === current) return
     try {
       await api.renamePackage(id, name)
     } catch (err) {
@@ -535,6 +537,37 @@ export function QueuePage({
 
   return (
     <>
+      {renaming && (
+        <PromptDialog
+          title="Rename package"
+          label="Package name"
+          initialValue={renaming.name}
+          confirmLabel="Rename"
+          onCancel={() => setRenaming(null)}
+          onConfirm={(name) => {
+            setRenaming(null)
+            void renamePackage(renaming.id, renaming.name, name)
+          }}
+        />
+      )}
+      {removing && (
+        <ConfirmDialog
+          title="Remove package?"
+          confirmLabel="Remove"
+          onCancel={() => setRemoving(null)}
+          onConfirm={() => {
+            setRemoving(null)
+            void runPackageAction(removing.id, 'delete')
+          }}
+        >
+          <p>
+            Removes “{removing.name}” ({removing.items.length} item{removing.items.length === 1 ? '' : 's'}) from the queue. Finished files stay
+            on disk.
+          </p>
+          {removing.items.some((i) => i.state !== 'done') && <p>Unfinished downloads are stopped and their partial data is deleted.</p>}
+          {removing.items.some((i) => i.extract_state === 'extracting') && <p>Archives being extracted stay in the queue.</p>}
+        </ConfirmDialog>
+      )}
       {info && !toast && (
         <div className="toast info" role="status">
           {info}
@@ -799,17 +832,13 @@ export function QueuePage({
                         >
                           +
                         </button>
-                        <button className="icon-btn" title="Rename package" onClick={() => void renamePackage(pkgId, group.name)}>
+                        <button className="icon-btn" title="Rename package" onClick={() => setRenaming({ id: pkgId, name: group.name })}>
                           ✎
                         </button>
                         <button
                           className="icon-btn danger"
                           title="Remove package from queue (files stay on disk)"
-                          onClick={() => {
-                            if (window.confirm(`Remove "${group.name}" (${group.items.length} items) from the queue?`)) {
-                              void runPackageAction(pkgId, 'delete')
-                            }
-                          }}
+                          onClick={() => setRemoving({ id: pkgId, name: group.name, items: group.items })}
                         >
                           <i className="ti ti-x" />
                         </button>
