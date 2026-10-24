@@ -197,6 +197,9 @@ type Manager struct {
 	activeMu  sync.Mutex
 	active    map[string]*runHandle
 	runningWG sync.WaitGroup
+	// extractWG tracks runExtraction goroutines (see startExtraction), so
+	// Shutdown waits for an extraction to record its outcome.
+	extractWG sync.WaitGroup
 
 	// captchaSolutions holds a solution submitted via SolveCaptcha for an
 	// item whose next run() attempt hasn't consumed it yet — see
@@ -384,6 +387,19 @@ func (m *Manager) resumeInterruptedExtractions() {
 	var updated []*Item
 	groups := map[string]*Item{}
 	for _, it := range m.items {
+		if it.ExtractState == ExtractStatePending {
+			// Interrupted before it got to extracting (waiting for its
+			// parts on disk), or every part finished just before the
+			// crash; maybeExtract checks that all parts are done.
+			if resume && it.State == StateDone && it.Filename != "" {
+				key := it.PackageID + "|" + extract.GroupBase(it.Filename)
+				if _, ok := groups[key]; !ok {
+					cp := *it
+					groups[key] = &cp
+				}
+			}
+			continue
+		}
 		if it.ExtractState != ExtractStateExtracting && it.ExtractState != ExtractStateQueued {
 			continue
 		}
@@ -426,7 +442,8 @@ func (m *Manager) resumeInterruptedExtractions() {
 
 // Shutdown cancels any in-flight downloads (returning them to StateQueued
 // so they resume cleanly on next start, rather than StateError) and waits
-// for their goroutines to exit, up to ctx's deadline.
+// for their goroutines, and for running extractions to record their
+// outcome, up to ctx's deadline. No extraction starts once it has begun.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.closingMu.Lock()
 	m.closing = true
@@ -440,6 +457,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
 		m.runningWG.Wait()
+		m.extractWG.Wait()
 		close(done)
 	}()
 	select {
@@ -1475,7 +1493,39 @@ func (m *Manager) maybeExtract(it *Item) {
 	if pkg != nil {
 		pkgPassword = pkg.Password
 	}
-	go m.runExtraction(firstPart, siblings, group, pkgPassword, "")
+	if !m.startExtraction(func() { m.runExtraction(firstPart, siblings, group, pkgPassword, "") }) {
+		m.releaseExtractClaim(triggerKey)
+	}
+}
+
+// ErrShuttingDown is returned when work is refused because Shutdown has
+// begun.
+var ErrShuttingDown = errors.New("queue: shutting down")
+
+// startExtraction runs fn (a runExtraction call) in a goroutine tracked
+// by extractWG and reports whether it did. Like the dispatcher's
+// runningWG.Add, the Add happens under closingMu, so none is added once
+// Shutdown has started waiting.
+func (m *Manager) startExtraction(fn func()) bool {
+	m.closingMu.Lock()
+	defer m.closingMu.Unlock()
+	if m.closing {
+		return false
+	}
+	m.extractWG.Add(1)
+	go func() {
+		defer m.extractWG.Done()
+		fn()
+	}()
+	return true
+}
+
+// releaseExtractClaim drops a group's extractTriggered claim that no
+// runExtraction will release.
+func (m *Manager) releaseExtractClaim(triggerKey string) {
+	m.extractTriggeredMu.Lock()
+	delete(m.extractTriggered, triggerKey)
+	m.extractTriggeredMu.Unlock()
 }
 
 // diskCheckAttempts/diskCheckInterval are the package-level defaults for
@@ -1607,7 +1657,13 @@ func (m *Manager) runExtraction(firstPart *Item, siblings []*Item, group, pkgPas
 			break
 		}
 		if attempt < m.diskCheckAttempts-1 {
-			time.Sleep(m.diskCheckInterval)
+			select {
+			case <-time.After(m.diskCheckInterval):
+			case <-m.shutdownCtx().Done():
+				// Shutting down: the group is still pending, which
+				// resumeInterruptedExtractions picks up on the next start.
+				return
+			}
 		}
 	}
 	if !ready {
@@ -1958,7 +2014,10 @@ func (m *Manager) RetryExtraction(id, extraPassword string) error {
 	}
 
 	m.setExtractState(pkgID, group, ExtractStatePending, "")
-	go m.runExtraction(firstPart, siblings, group, pkgPassword, extraPassword)
+	if !m.startExtraction(func() { m.runExtraction(firstPart, siblings, group, pkgPassword, extraPassword) }) {
+		m.releaseExtractClaim(triggerKey)
+		return ErrShuttingDown
+	}
 	return nil
 }
 
