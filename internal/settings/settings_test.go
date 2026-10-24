@@ -421,3 +421,25 @@ func TestApply_RefusesDownloadPathContainingDataDir(t *testing.T) {
 		t.Errorf("separate download_path refused: %v", err)
 	}
 }
+
+// Archive passwords go to unrar as arguments: a NUL byte would make every
+// extraction fail, so it is refused; empty entries are dropped (N15).
+func TestApply_ValidatesExtractPasswords(t *testing.T) {
+	m, err := New(newTestDB(t), defaultInitial(), Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Apply(Update{ExtractPasswords: []string{"ok", "bad\x00pw"}}); err == nil {
+		t.Error("password with a NUL byte accepted")
+	}
+	if _, err := m.Apply(Update{ExtractPasswords: []string{strings.Repeat("x", 257)}}); err == nil {
+		t.Error("overlong password accepted")
+	}
+	got, err := m.Apply(Update{ExtractPasswords: []string{"one", "", "two"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.ExtractPasswords, []string{"one", "two"}) {
+		t.Errorf("ExtractPasswords = %q, want the empty entry dropped", got.ExtractPasswords)
+	}
+}

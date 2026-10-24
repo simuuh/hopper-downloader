@@ -284,7 +284,11 @@ func (m *Manager) Apply(u Update) (Settings, error) {
 		next.ExtractDeleteAfter = *u.ExtractDeleteAfter
 	}
 	if u.ExtractPasswords != nil {
-		next.ExtractPasswords = u.ExtractPasswords
+		pws, err := normalizeExtractPasswords(u.ExtractPasswords)
+		if err != nil {
+			return Settings{}, err
+		}
+		next.ExtractPasswords = pws
 	}
 	if u.AccountPriority != nil {
 		order, err := normalizeAccountPriority(u.AccountPriority)
@@ -305,6 +309,32 @@ func (m *Manager) Apply(u Update) (Settings, error) {
 	m.mu.Unlock()
 	m.applyHooks(next)
 	return next, nil
+}
+
+// normalizeExtractPasswords validates the archive password list: each is
+// passed to unrar as a command-line argument, where a NUL byte makes
+// every extraction fail (the OS rejects the argument), and the whole list
+// is tried in turn per archive, so it is kept to a sane size. Empty
+// entries are dropped.
+func normalizeExtractPasswords(in []string) ([]string, error) {
+	const maxPasswords, maxLen = 100, 256
+	out := make([]string, 0, len(in))
+	for _, pw := range in {
+		if pw == "" {
+			continue
+		}
+		if strings.ContainsRune(pw, 0) {
+			return nil, fmt.Errorf("extract_passwords: a password contains a NUL character")
+		}
+		if len(pw) > maxLen {
+			return nil, fmt.Errorf("extract_passwords: a password is longer than %d bytes", maxLen)
+		}
+		out = append(out, pw)
+	}
+	if len(out) > maxPasswords {
+		return nil, fmt.Errorf("extract_passwords has %d entries, at most %d allowed", len(out), maxPasswords)
+	}
+	return out, nil
 }
 
 // accountPriorityName matches a plugin name (hoster_key).
