@@ -1539,6 +1539,21 @@ func (m *Manager) runExtraction(firstPart *Item, siblings []*Item, group, pkgPas
 		return
 	}
 	destDir := filepath.Dir(srcPath)
+	if firstPart.PackageID == "" {
+		// An archive without a package sits in the downloads root, next
+		// to every other download: its own folder keeps its files (and
+		// unrar's overwrite mode) away from them.
+		if sub := pathsafe.SanitizeFilename(group); sub != "" {
+			if dir, err := pathsafe.SafeJoin(destDir, sub); err == nil {
+				destDir = dir
+			}
+		}
+	}
+	if err := os.MkdirAll(destDir, 0o750); err != nil {
+		m.log.Error("queue: extract: create destination", "item_id", firstPart.ID, "error", err)
+		m.setExtractState(firstPart.PackageID, group, ExtractStateExtractFailed, err.Error())
+		return
+	}
 
 	// The group shows as queued only when it really has to wait, so a lone
 	// archive goes straight to "extracting". Waiting doesn't count against

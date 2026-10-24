@@ -960,3 +960,23 @@ func TestMaybeExtract_LogsWhyItDoesNotExtract(t *testing.T) {
 		})
 	}
 }
+
+// An archive without a package lives in the downloads root next to every
+// other download; it is extracted into its own folder there (M3).
+func TestRunExtraction_PackagelessArchiveGetsOwnFolder(t *testing.T) {
+	fe := &fakeExtractor{}
+	mgr, baseDir := newExtractTestManager(t, fe, &fakeExtractSettings{enabled: true}, 1)
+	if err := os.WriteFile(filepath.Join(baseDir, "example.zip"), []byte("zip content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	it := &Item{ID: newID(), Filename: "example.zip", ExtractState: ExtractStateExtractFailed}
+	injectDoneItem(t, mgr, it)
+
+	if err := mgr.RetryExtraction(it.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForExtractState(t, mgr, it.ID)
+	if got, want := fe.lastCall().destDir, filepath.Join(baseDir, "example"); got != want {
+		t.Fatalf("destDir = %q, want %q", got, want)
+	}
+}

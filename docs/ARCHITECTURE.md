@@ -321,6 +321,9 @@ mounts). The outcome is set on every item of the group. When it does
 *not* extract, it logs why: auto-extract off, parts paused or failed
 (they won't finish on their own), or the first part missing from the
 package; parts merely still downloading are logged at debug level.
+Archives are extracted next to their parts, into the package folder; an
+archive without a package gets a folder of its own named after it, so
+its files can't overwrite other downloads in the downloads root.
 As soon as one part is downloaded, the group's items become
 `extract_pending`: a downloaded archive only counts as finished once it
 is extracted, so "Clear done" and the Finished view leave it alone.
