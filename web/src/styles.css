@@ -478,6 +478,20 @@ button.btn.small {
 .ti-arrow-up::before {
   content: '↑';
 }
+/* No text glyph reads as "unpack", so this one is an SVG mask (an open
+   box with an arrow rising out of it) filled with currentColor — it still follows
+   the button's color and hover state like the glyphs above. */
+.ti-unpack::before {
+  content: '';
+  width: 1.15em;
+  height: 1.15em;
+  background-color: currentColor;
+  -webkit-mask: var(--icon-unpack) center / contain no-repeat;
+  mask: var(--icon-unpack) center / contain no-repeat;
+}
+.ti-unpack {
+  --icon-unpack: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 10l9 4 9-4'/%3E%3Cpath d='M3 10v8l9 4 9-4v-8'/%3E%3Cpath d='M12 14v8'/%3E%3Cpath d='M3 10l3-3M21 10l-3-3'/%3E%3Cpath d='M12 11V2'/%3E%3Cpath d='M9 5l3-3 3 3'/%3E%3C/svg%3E");
+}
 
 /* ---- queue: top bar / stats ---- */
 
@@ -836,6 +850,12 @@ textarea.url-input {
   text-overflow: ellipsis;
   margin-top: 1px;
 }
+.item-extract-status.pending {
+  color: var(--text-dim);
+}
+.item-extract-status.queued {
+  color: var(--state-waiting);
+}
 .item-extract-status.extracting {
   color: var(--accent);
 }
@@ -1020,6 +1040,21 @@ textarea.url-input {
   gap: 8px;
 }
 
+/* ConfirmDialog: same overlay/box as the captcha modal, a bit wider */
+.confirm-modal {
+  width: 400px;
+}
+.confirm-modal-body {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.confirm-modal-body p {
+  margin: 0 0 6px;
+}
+.confirm-modal-body p:last-child {
+  margin-bottom: 0;
+}
+
 /* "Edit link" dialog: same overlay/box as the captcha modal, wider */
 .edit-modal {
   width: 520px;
@@ -1086,6 +1121,12 @@ textarea.url-input {
 }
 .badge.state-captcha {
   color: var(--state-captcha);
+}
+.badge.state-downloaded {
+  color: var(--text-dim);
+}
+.badge.state-extracting {
+  color: var(--accent);
 }
 
 /* .progress-meta is also used by SettingsPage.tsx (generic small/faint

@@ -45,6 +45,23 @@ interface Props {
   onDrop: (e: DragEvent, id: string) => void
 }
 
+// doneDisplayState labels a downloaded item by what is left to do with
+// it: an archive is only 'done' once it is extracted (see lib/finished).
+function doneDisplayState(item: QueueItem): string {
+  switch (item.extract_state) {
+    case 'extract_pending':
+      return 'downloaded'
+    case 'extract_queued':
+      return 'waiting'
+    case 'extracting':
+      return 'extracting'
+    case 'extract_failed':
+      return 'error'
+    default:
+      return 'done'
+  }
+}
+
 export function ItemRow({
   item,
   selected,
@@ -95,7 +112,15 @@ export function ItemRow({
   // A paused item that never transferred anything was added paused (e.g. an
   // import with auto-start off): it is 'ready' to start, not interrupted.
   const neverStarted = item.state === 'paused' && item.downloaded === 0
-  const displayState = isCaptchaPending ? 'captcha' : isWaiting ? 'waiting' : neverStarted ? 'ready' : item.state
+  const displayState = isCaptchaPending
+    ? 'captcha'
+    : isWaiting
+      ? 'waiting'
+      : neverStarted
+        ? 'ready'
+        : item.state === 'done'
+          ? doneDisplayState(item)
+          : item.state
 
   function submitCaptcha() {
     if (!captchaDraft.trim()) return
@@ -185,6 +210,14 @@ export function ItemRow({
             {item.error}
           </div>
         )}
+        {item.state === 'done' && item.extract_state === 'extract_pending' && (
+          <div className="item-extract-status pending">Extracts once every part of the archive is downloaded</div>
+        )}
+        {item.extract_state === 'extract_queued' && (
+          <div className="item-extract-status queued" title="One archive is extracted at a time">
+            ⏳ Waiting to extract — another archive is being extracted
+          </div>
+        )}
         {item.extract_state === 'extracting' && <div className="item-extract-status extracting">Extracting…</div>}
         {item.extract_state === 'extracted' && <div className="item-extract-status extracted">✓ Extracted</div>}
         {item.extract_state === 'extract_failed' && (
@@ -272,12 +305,12 @@ export function ItemRow({
             </span>
           ) : (
             <button className="icon-btn" title="Re-extract" onClick={handleReExtractClick}>
-              <i className="ti ti-archive" />
+              <i className="ti ti-unpack" />
             </button>
           ))}
         {canExtract && (
           <button className="icon-btn" title="Extract now" onClick={() => onRetryExtract(item.id)}>
-            <i className="ti ti-archive" />
+            <i className="ti ti-unpack" />
           </button>
         )}
         {editable && (
@@ -285,7 +318,12 @@ export function ItemRow({
             ✎
           </button>
         )}
-        <button className="icon-btn danger" title="Cancel" onClick={() => onAction(item.id, 'cancel')}>
+        <button
+          className="icon-btn danger"
+          title={item.extract_state === 'extracting' ? "Can't remove while it's being extracted" : 'Cancel'}
+          disabled={item.extract_state === 'extracting'}
+          onClick={() => onAction(item.id, 'cancel')}
+        >
           <i className="ti ti-x" />
         </button>
       </div>

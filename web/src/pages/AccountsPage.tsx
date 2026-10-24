@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { PageHeader, PageState } from '../components/Page'
 import { literalText } from '../lib/inputProps'
 import { api, ApiError } from '../lib/api'
@@ -106,6 +107,7 @@ export function AccountsPage({ onAuthError }: { onAuthError: () => void }) {
   const [plugins, setPlugins] = useState<PluginInfo[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
   const [showAdd, setShowAdd] = useState(false)
+  const [deleting, setDeleting] = useState<Account | null>(null)
   const [hosterKey, setHosterKey] = useState('')
   const [values, setValues] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
@@ -208,8 +210,6 @@ export function AccountsPage({ onAuthError }: { onAuthError: () => void }) {
   }
 
   function remove(acc: Account) {
-    const name = pluginByKey.get(acc.hoster_key)?.name ?? acc.hoster_key
-    if (!window.confirm(`Delete the ${name} account${acc.username ? ` "${acc.username}"` : ''}?`)) return
     void act(acc, () => api.deleteAccount(acc.id), 'failed to delete account')
   }
 
@@ -239,6 +239,22 @@ export function AccountsPage({ onAuthError }: { onAuthError: () => void }) {
 
   return (
     <>
+      {deleting && (
+        <ConfirmDialog
+          title="Delete account?"
+          confirmLabel="Delete"
+          onCancel={() => setDeleting(null)}
+          onConfirm={() => {
+            setDeleting(null)
+            remove(deleting)
+          }}
+        >
+          <p>
+            Deletes the {pluginByKey.get(deleting.hoster_key)?.name ?? deleting.hoster_key} account
+            {deleting.username ? ` “${deleting.username}”` : ''} and its stored credentials.
+          </p>
+        </ConfirmDialog>
+      )}
       <PageHeader
         title="Accounts"
         subtitle="Premium and debrid accounts. Credentials are stored encrypted; status is re-checked every 12 hours."
@@ -408,7 +424,7 @@ export function AccountsPage({ onAuthError }: { onAuthError: () => void }) {
                             >
                               Edit
                             </button>
-                            <button className="btn small danger" disabled={working} onClick={() => remove(acc)}>
+                            <button className="btn small danger" disabled={working} onClick={() => setDeleting(acc)}>
                               Delete
                             </button>
                             {h === 'ok' && <PremiumLink plugin={plugin} label="Extend" />}

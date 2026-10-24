@@ -67,7 +67,7 @@ func (m *Manager) checkFinished(itemID string) {
 			return // still queued, downloading or paused
 		}
 		switch mem.ExtractState {
-		case ExtractStateExtracting:
+		case ExtractStateQueued, ExtractStateExtracting:
 			return
 		case ExtractStateExtractFailed:
 			ev.Extract = string(ExtractStateExtractFailed)

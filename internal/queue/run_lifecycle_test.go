@@ -177,6 +177,12 @@ func TestRun_PluginPanicFailsOnlyThatItem(t *testing.T) {
 	if !strings.Contains(got.Error, "internal error") {
 		t.Fatalf("Error = %q, want it to name an internal error", got.Error)
 	}
+	// run() frees the slot in a defer, just after the error state is
+	// published, so the state alone doesn't mean the slot is free yet.
+	deadline := time.Now().Add(2 * time.Second)
+	for mgr.activeFiles.Load() != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if mgr.activeFiles.Load() != 0 {
 		t.Fatalf("activeFiles = %d after the run ended, want its slot freed", mgr.activeFiles.Load())
 	}

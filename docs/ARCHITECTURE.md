@@ -321,7 +321,20 @@ mounts). The outcome is set on every item of the group. When it does
 *not* extract, it logs why: auto-extract off, parts paused or failed
 (they won't finish on their own), or the first part missing from the
 package; parts merely still downloading are logged at debug level.
-Extractions interrupted by a restart become `extract_failed`.
+As soon as one part is downloaded, the group's items become
+`extract_pending`: a downloaded archive only counts as finished once it
+is extracted, so "Clear done" and the Finished view leave it alone.
+Only one archive group extracts at a time (`Manager.extractSlot`, like
+a download slot): unrar already uses every core, and parallel
+extractions on one volume are slower in total. A group waiting for the
+slot shows `extract_queued`; the 30-minute `extractTimeout` only starts
+once it extracts. An archive being extracted can't be removed from the
+queue (`Cancel` returns `ErrExtractInProgress`): unrar would keep running
+and its result, and the delete-after cleanup, would be lost. One that is
+still queued can be removed; right before extracting, `beginExtraction`
+checks under the queue lock that every part is still there and skips the
+group otherwise. Extractions interrupted by a restart, running or
+queued, become `extract_failed`.
 
 `POST /queue/{id}/extract` (`RetryExtraction`) extracts on request: a
 finished archive that was never extracted (auto-extract was off when it

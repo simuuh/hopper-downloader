@@ -28,6 +28,13 @@ const (
 type ExtractState string
 
 const (
+	// ExtractStatePending: auto-extract will extract this archive once
+	// every part is downloaded. Until it is extracted the item doesn't
+	// count as finished, even when its own download is done.
+	ExtractStatePending ExtractState = "extract_pending"
+	// ExtractStateQueued: every part is done, but the group waits for
+	// another group's extraction to finish (see Manager.extractSlot).
+	ExtractStateQueued        ExtractState = "extract_queued"
 	ExtractStateExtracting    ExtractState = "extracting"
 	ExtractStateExtracted     ExtractState = "extracted"
 	ExtractStateExtractFailed ExtractState = "extract_failed"

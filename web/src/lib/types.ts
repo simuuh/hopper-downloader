@@ -1,6 +1,6 @@
 export type Priority = 'low' | 'normal' | 'high'
 export type ItemState = 'queued' | 'downloading' | 'paused' | 'done' | 'error'
-export type ExtractState = 'extracting' | 'extracted' | 'extract_failed'
+export type ExtractState = 'extract_pending' | 'extract_queued' | 'extracting' | 'extracted' | 'extract_failed'
 
 export interface QueueItem {
   id: string

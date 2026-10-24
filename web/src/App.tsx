@@ -4,9 +4,10 @@ import { StatusBar } from './components/StatusBar'
 import { ThemeToggle } from './components/ThemeToggle'
 import { useQueueSocket } from './hooks/useQueueSocket'
 import { api, clearToken, getToken } from './lib/api'
+import { isFinished } from './lib/finished'
 import { formatVersion } from './lib/format'
 import { clearSharedLinks, peekSharedLinks } from './lib/share'
-import { notificationsEnabled, notifyItemDone, notifyItemError, notifyPackageComplete } from './lib/notifications'
+import { notificationsEnabled, notifyExtractFailed, notifyItemDone, notifyItemError, notifyPackageComplete } from './lib/notifications'
 import { hashForTab, tabFromHash, type Tab } from './lib/route'
 import type { Package, QueueItem, UpdateStatus } from './lib/types'
 import { AccountsPage } from './pages/AccountsPage'
@@ -98,21 +99,25 @@ export function App() {
         const updated = ev.item
         setItems((prev) => {
           const idx = prev.findIndex((i) => i.id === updated.id)
-          const prevState = idx === -1 ? null : prev[idx].state
+          const before = idx === -1 ? null : prev[idx]
           const next = idx === -1 ? [...prev, updated] : prev.map((i, j) => (j === idx ? updated : i))
 
-          if (notificationsEnabled() && prevState !== updated.state) {
-            if (updated.state === 'done') {
+          // "Done" means finished as lib/finished defines it: an archive
+          // notifies once it is extracted, not when its download ends.
+          if (notificationsEnabled()) {
+            if (isFinished(updated) && !(before && isFinished(before))) {
               notifyItemDone(updated)
               if (updated.package_id) {
                 const siblings = next.filter((i) => i.package_id === updated.package_id)
-                if (siblings.length > 0 && siblings.every((i) => i.state === 'done')) {
+                if (siblings.length > 0 && siblings.every(isFinished)) {
                   const pkg = packagesRef.current.find((p) => p.id === updated.package_id)
                   notifyPackageComplete(pkg?.name ?? updated.package_id, siblings.length)
                 }
               }
-            } else if (updated.state === 'error') {
+            } else if (updated.state === 'error' && before?.state !== 'error') {
               notifyItemError(updated)
+            } else if (updated.extract_state === 'extract_failed' && before?.extract_state !== 'extract_failed') {
+              notifyExtractFailed(updated)
             }
           }
 
