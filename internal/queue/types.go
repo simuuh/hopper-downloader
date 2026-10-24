@@ -28,6 +28,9 @@ const (
 type ExtractState string
 
 const (
+	// ExtractStateQueued: every part is done, but the group waits for
+	// another group's extraction to finish (see Manager.extractSlot).
+	ExtractStateQueued        ExtractState = "extract_queued"
 	ExtractStateExtracting    ExtractState = "extracting"
 	ExtractStateExtracted     ExtractState = "extracted"
 	ExtractStateExtractFailed ExtractState = "extract_failed"

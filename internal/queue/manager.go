@@ -157,6 +157,13 @@ type Manager struct {
 	extractTriggeredMu sync.Mutex
 	extractTriggered   map[string]bool
 
+	// extractSlot lets one archive group extract at a time, like a
+	// download slot: unrar already uses every core, and several
+	// extractions writing to the same volume at once are slower in total
+	// than one after the other and each risks running into
+	// extractTimeout. Groups waiting for it show ExtractStateQueued.
+	extractSlot chan struct{}
+
 	// diskCheckAttempts/diskCheckInterval are this Manager's effective
 	// values for the package-level vars of the same purpose (see their
 	// doc comment) — resolved once in New from Config.DiskCheckAttempts/
@@ -256,6 +263,7 @@ func New(store *Store, registry *plugins.Registry, engine *downloader.Engine, ac
 		items:             make(map[string]*Item),
 		packages:          make(map[string]*Package),
 		extractTriggered:  make(map[string]bool),
+		extractSlot:       make(chan struct{}, 1),
 		diskCheckAttempts: diskCheckAtt,
 		diskCheckInterval: diskCheckIval,
 		wake:              make(chan struct{}, 1),
@@ -360,9 +368,9 @@ func (m *Manager) Start(ctx context.Context) {
 }
 
 // resetInterruptedExtractions recovers items left in
-// ExtractStateExtracting by a prior hopperd crash or restart:
-// runExtraction only ever runs while the process that started it is
-// alive, so any item still showing "extracting" when a new Manager
+// ExtractStateExtracting or ExtractStateQueued by a prior hopperd crash
+// or restart: runExtraction only ever runs while the process that started
+// it is alive, so any item still showing "extracting" when a new Manager
 // starts didn't finish — it just never got the chance to report success
 // or failure. Left alone, it would sit in the Web UI showing
 // "Extracting…" forever, since RetryExtraction only accepts an item
@@ -374,7 +382,7 @@ func (m *Manager) resetInterruptedExtractions() {
 	m.mu.Lock()
 	var updated []*Item
 	for _, it := range m.items {
-		if it.ExtractState != ExtractStateExtracting {
+		if it.ExtractState != ExtractStateExtracting && it.ExtractState != ExtractStateQueued {
 			continue
 		}
 		it.ExtractState = ExtractStateExtractFailed
@@ -1503,6 +1511,24 @@ func (m *Manager) runExtraction(firstPart *Item, siblings []*Item, group, pkgPas
 		return
 	}
 	destDir := filepath.Dir(srcPath)
+
+	// The group shows as queued only when it really has to wait, so a lone
+	// archive goes straight to "extracting". Waiting doesn't count against
+	// extractTimeout, which starts with the extraction itself below. A
+	// shutdown while queued leaves ExtractStateQueued persisted;
+	// resetInterruptedExtractions handles it on the next start.
+	select {
+	case m.extractSlot <- struct{}{}:
+	default:
+		m.setExtractState(firstPart.PackageID, group, ExtractStateQueued, "")
+		m.log.Info("queue: extract waits for another archive's extraction to finish", "item_id", firstPart.ID, "archive", group)
+		select {
+		case m.extractSlot <- struct{}{}:
+		case <-m.shutdownCtx().Done():
+			return
+		}
+	}
+	defer func() { <-m.extractSlot }()
 
 	ready := false
 	for attempt := 0; attempt < m.diskCheckAttempts; attempt++ {

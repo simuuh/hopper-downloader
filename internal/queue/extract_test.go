@@ -263,11 +263,17 @@ func TestManager_AutoExtract_KeepsArchiveWhenDeleteAfterFalse(t *testing.T) {
 // stuck as "Extracting…" forever, since RetryExtraction only accepts an
 // item already in ExtractStateExtractFailed.
 func TestManager_ResetsInterruptedExtractionsOnStart(t *testing.T) {
+	for _, state := range []ExtractState{ExtractStateExtracting, ExtractStateQueued} {
+		t.Run(string(state), func(t *testing.T) { testResetInterruptedExtraction(t, state) })
+	}
+}
+
+func testResetInterruptedExtraction(t *testing.T, state ExtractState) {
 	fe := &fakeExtractor{}
 	fs := &fakeExtractSettings{enabled: true}
 	mgr, _ := newExtractTestManager(t, fe, fs, 1)
 
-	it := &Item{ID: newID(), Filename: "archive.zip", ExtractState: ExtractStateExtracting}
+	it := &Item{ID: newID(), Filename: "archive.zip", ExtractState: state}
 	injectDoneItem(t, mgr, it)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -739,6 +745,61 @@ func TestRetryExtraction_ConcurrentRequestsStartOneExtraction(t *testing.T) {
 			t.Fatalf("round %d: %d requests accepted, %d extractions run; want exactly 1 of each", i, n, be.callCount())
 		}
 	}
+}
+
+// Archive groups extract one after the other: while one extraction runs,
+// a second group shows as queued and its extractor isn't called yet.
+func TestRunExtraction_OneGroupAtATime(t *testing.T) {
+	be := &blockingExtractor{release: make(chan struct{})}
+	fs := &fakeExtractSettings{enabled: true}
+	baseDir := t.TempDir()
+	eng := downloader.New(downloader.Config{BaseDir: baseDir, RetryMax: 1, RetryBackoffBase: 5 * time.Millisecond})
+	mgr, err := New(newTestStore(t), plugins.NewRegistry(directhttp.New()), eng, nil, nil, be, fs, scheduler.New(), discardLogger(), Config{ParallelFiles: 1, PollInterval: 15 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var items []*Item
+	for _, name := range []string{"first.zip", "second.zip"} {
+		if err := os.WriteFile(filepath.Join(baseDir, name), []byte("zip content"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		it := &Item{ID: newID(), Filename: name, ExtractState: ExtractStateExtractFailed}
+		injectDoneItem(t, mgr, it)
+		items = append(items, it)
+	}
+
+	if err := mgr.RetryExtraction(items[0].ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForItemExtractState(t, mgr, items[0].ID, ExtractStateExtracting)
+	if err := mgr.RetryExtraction(items[1].ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForItemExtractState(t, mgr, items[1].ID, ExtractStateQueued)
+
+	time.Sleep(50 * time.Millisecond)
+	if got, _ := mgr.Get(items[1].ID); got.ExtractState != ExtractStateQueued {
+		t.Fatalf("second group ExtractState = %q while the first still runs, want %q", got.ExtractState, ExtractStateQueued)
+	}
+
+	close(be.release)
+	waitForExtractState(t, mgr, items[0].ID)
+	waitForExtractState(t, mgr, items[1].ID)
+	if be.callCount() != 2 {
+		t.Fatalf("extractor called %d times, want 2", be.callCount())
+	}
+}
+
+func waitForItemExtractState(t *testing.T, mgr *Manager, id string, want ExtractState) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if it, ok := mgr.Get(id); ok && it.ExtractState == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("item %s never reached ExtractState %q", id, want)
 }
 
 // logBuffer is a concurrency-safe io.Writer for capturing log output.

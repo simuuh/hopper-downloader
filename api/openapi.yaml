@@ -755,10 +755,12 @@ components:
 
     ExtractState:
       type: string
-      enum: [extracting, extracted, extract_failed]
+      enum: [extract_queued, extracting, extracted, extract_failed]
       description: >-
         Absent/empty means "not an archive, or extraction is
-        disabled/hasn't run".
+        disabled/hasn't run". extract_queued means every part is done
+        and the archive waits for another one's extraction to finish
+        (one extraction runs at a time).
 
     QueueItem:
       type: object
