@@ -2461,6 +2461,12 @@ func (m *Manager) Cancel(id string) error {
 	if discardNow {
 		relPath = m.relPathLocked(it)
 	}
+	// Database first: if that fails the item stays, instead of vanishing
+	// now and coming back with the next start.
+	if err := m.store.DeleteItem(id); err != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("queue: delete item: %w", err)
+	}
 	delete(m.items, id)
 	m.mu.Unlock()
 	m.forgetFinished("item:" + id)
@@ -2469,10 +2475,6 @@ func (m *Manager) Cancel(id string) error {
 		if err := m.engine.DiscardPartial(relPath); err != nil {
 			m.log.Warn("queue: remove partial download", "item_id", id, "error", err)
 		}
-	}
-
-	if err := m.store.DeleteItem(id); err != nil {
-		return fmt.Errorf("queue: delete item: %w", err)
 	}
 	defer m.removePackageIfEmpty(pkgID)
 
@@ -2511,19 +2513,36 @@ func (m *Manager) CancelMany(ids []string) (deleted []string, failed []string) {
 // Reorder assigns sequential Position values to the given items in the
 // order supplied, for drag-to-reorder UIs. IDs not present in the queue
 // are ignored; items not mentioned keep their existing Position.
+//
+// The new positions are written in one transaction, so a failure leaves
+// the old order intact instead of a half-applied one, and each moved
+// item is published so other open Web UIs follow.
 func (m *Manager) Reorder(ids []string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	now := time.Now()
+	var updated []*Item
 	for i, id := range ids {
 		it, ok := m.items[id]
 		if !ok {
 			continue
 		}
-		it.Position = int64(i)
-		it.UpdatedAt = time.Now()
-		if err := m.store.PutItem(it); err != nil {
-			return fmt.Errorf("queue: persist item: %w", err)
-		}
+		cp := *it
+		cp.Position = int64(i)
+		cp.UpdatedAt = now
+		updated = append(updated, &cp)
+	}
+	if err := m.store.PutItems(updated); err != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("queue: persist order: %w", err)
+	}
+	for _, cp := range updated {
+		it := m.items[cp.ID]
+		it.Position, it.UpdatedAt = cp.Position, cp.UpdatedAt
+	}
+	m.mu.Unlock()
+
+	for _, cp := range updated {
+		m.publish(Event{Type: EventItemUpdated, Item: cp})
 	}
 	return nil
 }

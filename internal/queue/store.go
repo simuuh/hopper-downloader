@@ -57,6 +57,28 @@ func (s *Store) PutItem(it *Item) error {
 	})
 }
 
+// PutItems inserts or replaces several Items in one transaction: all of
+// them or none, and one disk sync instead of one per item.
+func (s *Store) PutItems(items []*Item) error {
+	data := make([][]byte, len(items))
+	for i, it := range items {
+		b, err := json.Marshal(it)
+		if err != nil {
+			return fmt.Errorf("queue: marshal item: %w", err)
+		}
+		data[i] = b
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(itemsBucket)
+		for i, it := range items {
+			if err := b.Put([]byte(it.ID), data[i]); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // DeleteItem removes an Item by ID.
 func (s *Store) DeleteItem(id string) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
