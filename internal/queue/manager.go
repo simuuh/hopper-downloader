@@ -1555,7 +1555,11 @@ func (m *Manager) runExtraction(firstPart *Item, siblings []*Item, group, pkgPas
 		return
 	}
 
-	m.setExtractState(firstPart.PackageID, group, ExtractStateExtracting, "")
+	if !m.beginExtraction(firstPart.PackageID, group, siblings) {
+		m.log.Info("queue: extract skipped, the archive was removed from the queue while it waited",
+			"item_id", firstPart.ID, "archive", group)
+		return
+	}
 
 	// Bound to the Manager's own shutdown context (not
 	// context.Background()): if hopperd shuts down mid-extraction, the
@@ -1682,6 +1686,49 @@ func (m *Manager) markExtractPending(packageID, group string) {
 	}
 }
 
+// beginExtraction sets ExtractStateExtracting on the group, but only if
+// every item of siblings is still in the queue; it reports whether it
+// did. Checking and setting under one lock closes the gap in which Cancel
+// (which refuses items being extracted) could remove a part right before
+// unrar starts on it: a group that waited for the extraction slot or for
+// its parts on disk may have been cleared in the meantime, and extracting
+// it then would unpack files nobody sees in the queue any more.
+func (m *Manager) beginExtraction(packageID, group string, siblings []*Item) bool {
+	m.mu.Lock()
+	for _, sib := range siblings {
+		if _, ok := m.items[sib.ID]; !ok {
+			m.mu.Unlock()
+			// Parts that are still there get a reason instead of a
+			// "waiting" state that would never change.
+			m.setExtractState(packageID, group, ExtractStateExtractFailed, "parts of the archive were removed from the queue")
+			return false
+		}
+	}
+	var updated []*Item
+	for _, sib := range m.items {
+		if sib.PackageID != packageID || sib.Filename == "" {
+			continue
+		}
+		if !extract.IsArchive(sib.Filename) || extract.GroupBase(sib.Filename) != group {
+			continue
+		}
+		sib.ExtractState = ExtractStateExtracting
+		sib.ExtractError = ""
+		sib.UpdatedAt = time.Now()
+		if err := m.store.PutItem(sib); err != nil {
+			m.log.Error("queue: persist item", "item_id", sib.ID, "error", err)
+		}
+		cp := *sib
+		updated = append(updated, &cp)
+	}
+	m.mu.Unlock()
+
+	for _, it := range updated {
+		m.publish(Event{Type: EventItemUpdated, Item: it})
+	}
+	return true
+}
+
 // deleteArchiveParts removes every on-disk file belonging to a
 // successfully-extracted archive group (all parts of a multi-part RAR
 // set, or the single zip/tar.{gz,bz2} file).
@@ -1720,9 +1767,9 @@ var ErrExtractNotRetryable = errors.New("queue: item is not a finished archive t
 // extraction would only fail on the missing volume.
 var ErrArchiveIncomplete = errors.New("queue: not every part of the archive is downloaded yet")
 
-// ErrExtractInProgress is returned by RetryExtraction when the item's
-// archive is already being extracted (another request, or the automatic
-// extraction after the last part finished).
+// ErrExtractInProgress is returned by RetryExtraction and Cancel when the
+// item's archive is already being extracted (another request, or the
+// automatic extraction after the last part finished).
 var ErrExtractInProgress = errors.New("queue: archive is already being extracted")
 
 // ErrArchiveMissing is returned by RetryExtraction when the item's
@@ -2362,13 +2409,21 @@ func (m *Manager) SetPackagePath(id, path string) (*Package, error) {
 
 // Cancel permanently removes an item from the queue, stopping any
 // in-flight transfer. It does not delete partially downloaded files on
-// disk.
+// disk. An archive being extracted is refused with ErrExtractInProgress:
+// unrar keeps running either way, and its result (and the delete-after
+// cleanup, which finds the parts through their items) would be lost. One
+// still waiting for the extraction slot can be removed; runExtraction
+// then skips it (see beginExtraction).
 func (m *Manager) Cancel(id string) error {
 	m.mu.Lock()
 	it, ok := m.items[id]
 	if !ok {
 		m.mu.Unlock()
 		return ErrNotFound
+	}
+	if it.ExtractState == ExtractStateExtracting {
+		m.mu.Unlock()
+		return ErrExtractInProgress
 	}
 	wasDownloading := it.State == StateDownloading
 	pkgID := it.PackageID

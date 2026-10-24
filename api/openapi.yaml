@@ -260,7 +260,8 @@ paths:
         DELETE /queue/{id} per item in parallel, which could trip the
         API's per-client rate limiter on a large batch. A per-id failure
         (e.g. an id that no longer exists) doesn't fail the whole
-        request — it's reported back in failed instead.
+        request — it's reported back in failed instead; so is an archive
+        that is being extracted (see DELETE /queue/{id}).
       requestBody:
         required: true
         content:
@@ -343,12 +344,17 @@ paths:
     delete:
       operationId: cancelQueueItem
       summary: Cancel and remove a queue item
-      description: Does not delete any partially downloaded file on disk.
+      description: >-
+        Does not delete any partially downloaded file on disk. An archive
+        that is being extracted can't be removed (409); one waiting to be
+        extracted can, and is then not extracted.
       parameters: [ { $ref: '#/components/parameters/ItemID' } ]
       responses:
         '204':
           description: Cancelled
         '404':
+          $ref: '#/components/responses/Error'
+        '409':
           $ref: '#/components/responses/Error'
 
   /queue/{id}/pause:

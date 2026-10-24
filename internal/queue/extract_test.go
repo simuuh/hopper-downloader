@@ -791,6 +791,56 @@ func TestRunExtraction_OneGroupAtATime(t *testing.T) {
 	}
 }
 
+// An archive being extracted can't be removed (unrar keeps running and
+// its result would be lost); one waiting for the extraction slot can, and
+// is then not extracted at all.
+func TestCancel_DuringExtraction(t *testing.T) {
+	be := &blockingExtractor{release: make(chan struct{})}
+	fs := &fakeExtractSettings{enabled: true}
+	baseDir := t.TempDir()
+	eng := downloader.New(downloader.Config{BaseDir: baseDir, RetryMax: 1, RetryBackoffBase: 5 * time.Millisecond})
+	mgr, err := New(newTestStore(t), plugins.NewRegistry(directhttp.New()), eng, nil, nil, be, fs, scheduler.New(), discardLogger(), Config{ParallelFiles: 1, PollInterval: 15 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var items []*Item
+	for _, name := range []string{"running.zip", "waiting.zip"} {
+		if err := os.WriteFile(filepath.Join(baseDir, name), []byte("zip content"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		it := &Item{ID: newID(), Filename: name, ExtractState: ExtractStateExtractFailed}
+		injectDoneItem(t, mgr, it)
+		items = append(items, it)
+	}
+	running, waiting := items[0], items[1]
+
+	if err := mgr.RetryExtraction(running.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForItemExtractState(t, mgr, running.ID, ExtractStateExtracting)
+	if err := mgr.RetryExtraction(waiting.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForItemExtractState(t, mgr, waiting.ID, ExtractStateQueued)
+
+	if err := mgr.Cancel(running.ID); !errors.Is(err, ErrExtractInProgress) {
+		t.Fatalf("Cancel while extracting = %v, want ErrExtractInProgress", err)
+	}
+	if err := mgr.Cancel(waiting.ID); err != nil {
+		t.Fatalf("Cancel while queued = %v, want nil", err)
+	}
+
+	close(be.release)
+	waitForExtractState(t, mgr, running.ID)
+	time.Sleep(50 * time.Millisecond)
+	if be.callCount() != 1 {
+		t.Fatalf("extractor called %d times, want 1 (the removed archive must not be extracted)", be.callCount())
+	}
+	if base := filepath.Base(be.lastCall().srcPath); base != "running.zip" {
+		t.Fatalf("extracted %s, want running.zip", base)
+	}
+}
+
 // A downloaded part of an archive whose other parts are still downloading
 // is marked pending, so it doesn't count as finished yet.
 func TestMaybeExtract_MarksDownloadedPartsPending(t *testing.T) {

@@ -328,7 +328,12 @@ Only one archive group extracts at a time (`Manager.extractSlot`, like
 a download slot): unrar already uses every core, and parallel
 extractions on one volume are slower in total. A group waiting for the
 slot shows `extract_queued`; the 30-minute `extractTimeout` only starts
-once it extracts. Extractions interrupted by a restart, running or
+once it extracts. An archive being extracted can't be removed from the
+queue (`Cancel` returns `ErrExtractInProgress`): unrar would keep running
+and its result, and the delete-after cleanup, would be lost. One that is
+still queued can be removed; right before extracting, `beginExtraction`
+checks under the queue lock that every part is still there and skips the
+group otherwise. Extractions interrupted by a restart, running or
 queued, become `extract_failed`.
 
 `POST /queue/{id}/extract` (`RetryExtraction`) extracts on request: a
