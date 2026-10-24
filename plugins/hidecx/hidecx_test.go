@@ -651,3 +651,22 @@ func TestSortLinksByPart_FallsBackToNameForNonPartPattern(t *testing.T) {
 		t.Errorf("links = %+v, want alphabetical fallback order", links)
 	}
 }
+
+// A link ID from the container response stays one path segment: it can't
+// climb out of /containers/<uuid>/links/ or add a query (N9d).
+func TestResolveLinkURL_EscapesLinkID(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.EscapedPath(), r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(linkResolveResponse{URL: "https://host.example/file"})
+	}))
+	t.Cleanup(srv.Close)
+	p := newTestPlugin(srv, nil)
+
+	if _, err := p.resolveLinkURL(containerHandlerUUID, containerLink{ID: "../../x?y="}); err != nil {
+		t.Fatal(err)
+	}
+	if want := "/containers/" + containerHandlerUUID + "/links/..%2F..%2Fx%3Fy="; gotPath != want || gotQuery != "" {
+		t.Fatalf("request path %q query %q, want path %q and no query", gotPath, gotQuery, want)
+	}
+}

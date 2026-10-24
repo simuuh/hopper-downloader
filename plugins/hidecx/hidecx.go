@@ -422,7 +422,9 @@ func (p *Plugin) resolveLinkURL(uuid string, link containerLink) (string, error)
 	}
 
 	var res linkResolveResponse
-	if err := p.getJSON(fmt.Sprintf("/containers/%s/links/%s", uuid, link.ID), &res); err != nil {
+	// link.ID comes from the container's API response: escaped, an ID
+	// like "../../x?y=" can't rewrite the path or add a query.
+	if err := p.getJSON(fmt.Sprintf("/containers/%s/links/%s", uuid, url.PathEscape(link.ID)), &res); err != nil {
 		return "", err
 	}
 	if res.URL == "" {
