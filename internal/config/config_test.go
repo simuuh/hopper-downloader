@@ -286,3 +286,25 @@ func TestLoad_TLSCertWithoutKeyRejected(t *testing.T) {
 		t.Fatal("expected error for tls_cert_file without tls_key_file, got nil")
 	}
 }
+
+// A leftover secrets.json.tmp with looser permissions doesn't leave the
+// new secrets.json readable by others (N7).
+func TestWriteSecrets_KeepsModeWithLeftoverTemp(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes don't apply on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	if err := os.WriteFile(path+".tmp", []byte("old"), 0o644); err != nil { //nolint:gosec // G306: deliberately loose, that's the test
+		t.Fatal(err)
+	}
+	if err := writeSecrets(path, storedSecrets{}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("secrets.json mode %o, want 600", mode)
+	}
+}

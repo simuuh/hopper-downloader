@@ -134,14 +134,54 @@ func writeSecrets(path string, s storedSecrets) error {
 	if err != nil {
 		return err
 	}
+	// Written to disk (fsync) before the rename, and the directory synced
+	// after it: a power cut right after a plain rename can leave an empty
+	// secrets.json, and with it hopperd unable to start and the key for
+	// the stored account credentials gone.
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := writeFileSynced(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
+	syncDir(filepath.Dir(path))
 	return nil
+}
+
+// writeFileSynced writes data to path with mode perm and flushes it to
+// disk. The mode is set explicitly too, in case path already existed
+// with other permissions.
+func writeFileSynced(path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(perm); err != nil && !errors.Is(err, errors.ErrUnsupported) {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// syncDir flushes a directory entry change (a rename) to disk where the
+// OS supports it; on Windows opening a directory for sync isn't
+// possible, which is fine to ignore.
+func syncDir(dir string) {
+	d, err := os.Open(dir) //nolint:gosec // G304: hopperd's own config directory
+	if err != nil {
+		return
+	}
+	_ = d.Sync()
+	_ = d.Close()
 }
 
 // randomString returns n characters from an unambiguous alphabet
