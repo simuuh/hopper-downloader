@@ -36,7 +36,9 @@ Authorization: Bearer <still-valid JWT>
 Exchanges a currently-valid token for a fresh one with a full new
 `token_ttl` window, without the password — an already-expired token is
 rejected the same way any other request is, so this can't resurrect a
-dead session, only extend a live one. The Web UI calls this proactively
+dead session, only extend a live one. Refreshing stops (`401`) once the
+original login is more than 30 days old (or `token_ttl`, if longer); and
+changing the admin password invalidates every token issued before. The Web UI calls this proactively
 before a bulk action if the stored token is close to expiring (see
 `web/src/lib/api.ts`'s `tokenNearExpiry`), so a long multi-select
 operation's parallel requests don't legitimately 401 partway through
