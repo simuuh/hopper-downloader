@@ -336,8 +336,11 @@ queue (`Cancel` returns `ErrExtractInProgress`): unrar would keep running
 and its result, and the delete-after cleanup, would be lost. One that is
 still queued can be removed; right before extracting, `beginExtraction`
 checks under the queue lock that every part is still there and skips the
-group otherwise. Extractions interrupted by a restart, running or
-queued, become `extract_failed`.
+group otherwise. An extraction cut off by a shutdown is not recorded as
+failed (no notification either): it stays `extracting`, and on the next
+start `resumeInterruptedExtractions` extracts every interrupted group,
+running or queued, again — or, with auto-extract off, marks it
+`extract_failed` with a pointer to the re-extract button.
 
 `POST /queue/{id}/extract` (`RetryExtraction`) extracts on request: a
 finished archive that was never extracted (auto-extract was off when it

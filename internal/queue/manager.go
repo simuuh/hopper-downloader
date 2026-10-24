@@ -337,7 +337,7 @@ func (m *Manager) Start(ctx context.Context) {
 	m.runCtx = ctx
 	m.runMu.Unlock()
 
-	m.resetInterruptedExtractions()
+	m.resumeInterruptedExtractions()
 
 	m.sched.Every(ctx, m.cfg.PollInterval, func(ctx context.Context) { m.dispatch(ctx) })
 
@@ -368,38 +368,59 @@ func (m *Manager) Start(ctx context.Context) {
 	m.mu.RUnlock()
 }
 
-// resetInterruptedExtractions recovers items left in
-// ExtractStateExtracting or ExtractStateQueued by a prior hopperd crash
-// or restart: runExtraction only ever runs while the process that started
-// it is alive, so any item still showing "extracting" when a new Manager
-// starts didn't finish — it just never got the chance to report success
-// or failure. Left alone, it would sit in the Web UI showing
-// "Extracting…" forever, since RetryExtraction only accepts an item
-// already in ExtractStateExtractFailed. Called once, at startup, before
-// the dispatcher (and therefore any real download or extraction) begins.
-func (m *Manager) resetInterruptedExtractions() {
+// resumeInterruptedExtractions picks up extractions a prior shutdown or
+// crash interrupted: runExtraction only runs while the process that
+// started it is alive, so an item still "extracting" or "extract_queued"
+// at startup never finished. With auto-extract on, its group goes back to
+// pending and is extracted again (unrar overwrites what the interrupted
+// run left); with it off, it becomes extract_failed with a hint to the
+// re-extract button instead of showing "Extracting…" forever. Called
+// once from Start, after runCtx is set.
+func (m *Manager) resumeInterruptedExtractions() {
 	const msg = "extraction interrupted by restart — use re-extract button"
+	resume := m.extractor != nil && m.extractSettings != nil && m.extractSettings.ExtractEnabled()
 
 	m.mu.Lock()
 	var updated []*Item
+	groups := map[string]*Item{}
 	for _, it := range m.items {
 		if it.ExtractState != ExtractStateExtracting && it.ExtractState != ExtractStateQueued {
 			continue
 		}
-		it.ExtractState = ExtractStateExtractFailed
-		it.ExtractError = msg
+		if resume {
+			it.ExtractState = ExtractStatePending
+			it.ExtractError = ""
+		} else {
+			it.ExtractState = ExtractStateExtractFailed
+			it.ExtractError = msg
+		}
 		it.UpdatedAt = time.Now()
 		if err := m.store.PutItem(it); err != nil {
 			m.log.Error("queue: persist item", "item_id", it.ID, "error", err)
 		}
 		cp := *it
 		updated = append(updated, &cp)
+		if resume && it.State == StateDone && it.Filename != "" {
+			key := it.PackageID + "|" + extract.GroupBase(it.Filename)
+			if _, ok := groups[key]; !ok {
+				groups[key] = &cp
+			}
+		}
 	}
 	m.mu.Unlock()
 
 	for _, it := range updated {
-		m.log.Warn("queue: extraction interrupted by restart, marked extract_failed", "item_id", it.ID)
 		m.publish(Event{Type: EventItemUpdated, Item: it})
+	}
+	if !resume {
+		for _, it := range updated {
+			m.log.Warn("queue: extraction interrupted by restart, marked extract_failed", "item_id", it.ID)
+		}
+		return
+	}
+	for _, it := range groups {
+		m.log.Info("queue: extraction interrupted by restart, extracting again", "item_id", it.ID, "archive", extract.GroupBase(it.Filename))
+		m.maybeExtract(it)
 	}
 }
 
@@ -1559,7 +1580,7 @@ func (m *Manager) runExtraction(firstPart *Item, siblings []*Item, group, pkgPas
 	// archive goes straight to "extracting". Waiting doesn't count against
 	// extractTimeout, which starts with the extraction itself below. A
 	// shutdown while queued leaves ExtractStateQueued persisted;
-	// resetInterruptedExtractions handles it on the next start.
+	// resumeInterruptedExtractions handles it on the next start.
 	select {
 	case m.extractSlot <- struct{}{}:
 	default:
@@ -1639,6 +1660,14 @@ func (m *Manager) runExtraction(firstPart *Item, siblings []*Item, group, pkgPas
 	elapsed := time.Since(start).Round(time.Second)
 
 	if err != nil {
+		if m.shutdownCtx().Err() != nil {
+			// Stopped by hopperd shutting down, not a broken archive: the
+			// group stays "extracting" (checkFinished doesn't notify for
+			// it) and resumeInterruptedExtractions extracts it again on
+			// the next start.
+			m.log.Info("queue: extract interrupted by shutdown", "item_id", firstPart.ID, "archive", srcPath, "elapsed", elapsed)
+			return
+		}
 		m.log.Warn("queue: extract failed", "item_id", firstPart.ID, "archive", srcPath, "elapsed", elapsed, "error", err)
 		m.setExtractState(firstPart.PackageID, group, ExtractStateExtractFailed, err.Error())
 		return
