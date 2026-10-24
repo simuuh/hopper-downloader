@@ -167,11 +167,43 @@ function countLinksFromBody(path, body) {
   }
 }
 
+// The relayed request comes from the page (inject.js runs in its world),
+// so only what a Click'n'Load button really sends is forwarded: one of
+// the two add endpoints, with a form body. Anything else would let a page
+// use the extension to POST arbitrary paths and bodies to hopperd.
+const CNL_PATHS = new Set(['/flash/add', '/flash/addcrypted2']);
+const CNL_CONTENT_TYPES = ['application/x-www-form-urlencoded', 'multipart/form-data'];
+
+// cnlTargetPath returns the path (with query) to forward msg to, or null
+// if msg isn't a Click'n'Load add request.
+function cnlTargetPath(msg) {
+  const raw = String(msg.path || '');
+  if (!raw.startsWith('/') || raw.startsWith('//')) {
+    return null;
+  }
+  let u;
+  try {
+    u = new URL(raw, 'http://localhost');
+  } catch {
+    return null;
+  }
+  const type = String(msg.contentType || CNL_CONTENT_TYPES[0]).toLowerCase();
+  if (!CNL_PATHS.has(u.pathname) || !CNL_CONTENT_TYPES.some((t) => type.startsWith(t))) {
+    return null;
+  }
+  return u.pathname + u.search;
+}
+
 // forwardCnl does the actual work: POST the relayed request to hopperd's
 // real CnL listener and record it for the popup. Shared by the "cnl" port
 // handler below — the sole path content-script.js uses (see this file's
 // header comment, job 1, for why a port rather than onMessage).
 async function forwardCnl(msg, sender) {
+  const path = cnlTargetPath(msg);
+  if (!path) {
+    console.warn("Hopper: ignoring relayed request that is not a Click'n'Load add:", msg.path);
+    return { ok: false, error: "not a Click'n'Load request" };
+  }
   try {
     const { targetUrl } = await getSyncSettings();
     const cnlTarget = deriveTarget(targetUrl, CNL_PORT);
@@ -179,7 +211,7 @@ async function forwardCnl(msg, sender) {
       return { ok: false, error: 'invalid target url' };
     }
 
-    const resp = await fetch(`${cnlTarget}${msg.path}`, {
+    const resp = await fetch(`${cnlTarget}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': msg.contentType || 'application/x-www-form-urlencoded' },
       body: msg.body || '',
@@ -196,14 +228,14 @@ async function forwardCnl(msg, sender) {
       lastCnl: {
         timestamp: Date.now(),
         source: sourceHost,
-        path: msg.path,
-        linkCount: countLinksFromBody(msg.path, msg.body),
+        path,
+        linkCount: countLinksFromBody(path, msg.body),
         ok: resp.ok,
       },
     });
 
     if (!resp.ok) {
-      console.warn('Hopper: CnL forward returned non-OK status:', resp.status, msg.path);
+      console.warn('Hopper: CnL forward returned non-OK status:', resp.status, path);
     }
     return { ok: resp.ok, status: resp.status };
   } catch (err) {
