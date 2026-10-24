@@ -542,14 +542,15 @@ func TestRetryExtraction_Success(t *testing.T) {
 		t.Fatalf("RetryExtraction: %v", err)
 	}
 
-	// The reset to "" is published synchronously, before the background
-	// extraction starts. Checked via the first event rather than Get():
-	// the goroutine may already have set "extracting" by the time Get
-	// runs (the archive is on disk, so it doesn't wait).
+	// The reset to pending is published synchronously, before the
+	// background extraction starts. Checked via the first event rather
+	// than Get(): the goroutine may already have set "extracting" by the
+	// time Get runs (the archive is on disk, so it doesn't wait).
 	select {
 	case ev := <-events:
-		if ev.Type != EventItemUpdated || ev.Item == nil || ev.Item.ID != it.ID || ev.Item.ExtractState != "" {
-			t.Errorf("first event after RetryExtraction = %+v, want item_updated with ExtractState cleared", ev)
+		if ev.Type != EventItemUpdated || ev.Item == nil || ev.Item.ID != it.ID ||
+			ev.Item.ExtractState != ExtractStatePending || ev.Item.ExtractError != "" {
+			t.Errorf("first event after RetryExtraction = %+v, want item_updated with ExtractState pending and the error cleared", ev)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no event after RetryExtraction")
@@ -787,6 +788,33 @@ func TestRunExtraction_OneGroupAtATime(t *testing.T) {
 	waitForExtractState(t, mgr, items[1].ID)
 	if be.callCount() != 2 {
 		t.Fatalf("extractor called %d times, want 2", be.callCount())
+	}
+}
+
+// A downloaded part of an archive whose other parts are still downloading
+// is marked pending, so it doesn't count as finished yet.
+func TestMaybeExtract_MarksDownloadedPartsPending(t *testing.T) {
+	fe := &fakeExtractor{}
+	fs := &fakeExtractSettings{enabled: true}
+	mgr, _ := newExtractTestManager(t, fe, fs, 1)
+
+	first := &Item{ID: newID(), Filename: "archive.part1.rar"}
+	injectDoneItem(t, mgr, first)
+	second := &Item{ID: newID(), Filename: "archive.part2.rar"}
+	injectDoneItem(t, mgr, second)
+	mgr.mu.Lock()
+	mgr.items[second.ID].State = StateDownloading
+	mgr.mu.Unlock()
+
+	mgr.maybeExtract(first)
+
+	for _, id := range []string{first.ID, second.ID} {
+		if got, _ := mgr.Get(id); got.ExtractState != ExtractStatePending {
+			t.Errorf("%s ExtractState = %q, want %q", got.Filename, got.ExtractState, ExtractStatePending)
+		}
+	}
+	if fe.callCount() != 0 {
+		t.Errorf("extractor called %d times while a part is still downloading, want 0", fe.callCount())
 	}
 }
 

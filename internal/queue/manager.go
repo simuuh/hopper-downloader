@@ -1369,6 +1369,7 @@ func (m *Manager) maybeExtract(it *Item) {
 		return
 	}
 	group := extract.GroupBase(it.Filename)
+	m.markExtractPending(it.PackageID, group)
 
 	m.mu.RLock()
 	var firstPart *Item
@@ -1408,8 +1409,9 @@ func (m *Manager) maybeExtract(it *Item) {
 		m.log.Debug("queue: extract waits for remaining parts", "item_id", it.ID, "archive", group, "pending", pending)
 		return
 	case firstPart == nil:
-		m.log.Warn("queue: extract: first part of the archive is not in this package, nothing extracted",
-			"item_id", it.ID, "archive", group)
+		const msg = "first part of the archive is not in this package"
+		m.log.Warn("queue: extract: "+msg+", nothing extracted", "item_id", it.ID, "archive", group)
+		m.setExtractState(it.PackageID, group, ExtractStateExtractFailed, msg)
 		return
 	}
 
@@ -1650,6 +1652,36 @@ func (m *Manager) setExtractState(packageID, group string, state ExtractState, e
 	}
 }
 
+// markExtractPending sets ExtractStatePending on every item of
+// packageID+group that has no extract state yet — called by maybeExtract
+// as soon as one part of an archive is downloaded, so the parts already
+// done don't count as finished (and "Clear done" leaves them alone) while
+// the rest of the set still downloads.
+func (m *Manager) markExtractPending(packageID, group string) {
+	m.mu.Lock()
+	var updated []*Item
+	for _, sib := range m.items {
+		if sib.PackageID != packageID || sib.Filename == "" || sib.ExtractState != "" {
+			continue
+		}
+		if !extract.IsArchive(sib.Filename) || extract.GroupBase(sib.Filename) != group {
+			continue
+		}
+		sib.ExtractState = ExtractStatePending
+		sib.UpdatedAt = time.Now()
+		if err := m.store.PutItem(sib); err != nil {
+			m.log.Error("queue: persist item", "item_id", sib.ID, "error", err)
+		}
+		cp := *sib
+		updated = append(updated, &cp)
+	}
+	m.mu.Unlock()
+
+	for _, it := range updated {
+		m.publish(Event{Type: EventItemUpdated, Item: it})
+	}
+}
+
 // deleteArchiveParts removes every on-disk file belonging to a
 // successfully-extracted archive group (all parts of a multi-part RAR
 // set, or the single zip/tar.{gz,bz2} file).
@@ -1709,12 +1741,10 @@ var ErrArchiveMissing = errors.New("queue: archive file not found on disk")
 // ahead of the persisted extract_passwords list for this attempt only —
 // see runExtraction's doc comment; it is never written to settings.
 //
-// Every sibling in the archive group has its ExtractState/ExtractError
-// cleared (reset to "") before extraction is kicked off in the
-// background, mirroring the "no extract state yet" starting point a
-// fresh completion event would see — setExtractState (called from
-// runExtraction almost immediately after) then republishes
-// ExtractStateExtracting per sibling over the same EventItemUpdated
+// Every sibling in the archive group is reset to ExtractStatePending
+// (error cleared) before extraction is kicked off in the background, the
+// same state a fresh completion leaves it in — runExtraction then
+// publishes queued/extracting per sibling over the same EventItemUpdated
 // path the Web UI already listens on.
 func (m *Manager) RetryExtraction(id, extraPassword string) error {
 	m.mu.RLock()
@@ -1723,7 +1753,7 @@ func (m *Manager) RetryExtraction(id, extraPassword string) error {
 		m.mu.RUnlock()
 		return ErrNotFound
 	}
-	if it.State != StateDone || (it.ExtractState != "" && it.ExtractState != ExtractStateExtractFailed) {
+	if it.State != StateDone || !extractRetryable(it.ExtractState) {
 		m.mu.RUnlock()
 		return ErrExtractNotRetryable
 	}
@@ -1801,7 +1831,7 @@ func (m *Manager) RetryExtraction(id, extraPassword string) error {
 
 	m.mu.RLock()
 	cur, ok := m.items[id]
-	stillPending := ok && (cur.ExtractState == "" || cur.ExtractState == ExtractStateExtractFailed)
+	stillPending := ok && extractRetryable(cur.ExtractState)
 	m.mu.RUnlock()
 	if !stillPending {
 		m.extractTriggeredMu.Lock()
@@ -1810,9 +1840,16 @@ func (m *Manager) RetryExtraction(id, extraPassword string) error {
 		return ErrExtractNotRetryable
 	}
 
-	m.setExtractState(pkgID, group, "", "")
+	m.setExtractState(pkgID, group, ExtractStatePending, "")
 	go m.runExtraction(firstPart, siblings, group, pkgPassword, extraPassword)
 	return nil
+}
+
+// extractRetryable reports whether RetryExtraction accepts an archive in
+// state s: never extracted (auto-extract off, or still pending because it
+// was interrupted before extraction started) or failed.
+func extractRetryable(s ExtractState) bool {
+	return s == "" || s == ExtractStatePending || s == ExtractStateExtractFailed
 }
 
 // AddOptions customizes a newly added Item.

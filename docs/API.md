@@ -89,10 +89,10 @@ POST /queue/{id}/extract
 ```
 
 Valid for an item that's `state: "done"` and either never extracted (no
-`extract_state` — auto-extract was off when it finished) or with
-`extract_state: "extract_failed"`; works whether auto-extract is on or
+`extract_state` — auto-extract was off when it finished — or
+`extract_pending`) or with `extract_state: "extract_failed"`; works whether auto-extract is on or
 not. Anything else (extracting, extracted, not done) is `400`. Resets
-`extract_state` and runs extraction in the background; watch `/ws` for
+`extract_state` to `extract_pending` and runs extraction in the background; watch `/ws` for
 the item transitioning to `extracting` and then `extracted` or
 `extract_failed`. `password`, if given, is tried ahead of the persisted
 `extract_passwords` (see `POST /settings`) for this attempt only — it's

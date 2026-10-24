@@ -755,12 +755,14 @@ components:
 
     ExtractState:
       type: string
-      enum: [extract_queued, extracting, extracted, extract_failed]
+      enum: [extract_pending, extract_queued, extracting, extracted, extract_failed]
       description: >-
         Absent/empty means "not an archive, or extraction is
-        disabled/hasn't run". extract_queued means every part is done
-        and the archive waits for another one's extraction to finish
-        (one extraction runs at a time).
+        disabled". extract_pending means auto-extract will extract it once
+        every part is downloaded; extract_queued means every part is done
+        and the archive waits for another one's extraction to finish (one
+        extraction runs at a time). A done item counts as finished only
+        once its archive is extracted (or it has no extract state).
 
     QueueItem:
       type: object
