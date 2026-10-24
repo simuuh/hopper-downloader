@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -161,7 +162,7 @@ func (n *Notifier) sendNtfy(ctx context.Context, ev Event) error {
 func (n *Notifier) do(req *http.Request) error {
 	resp, err := n.client.Do(req)
 	if err != nil {
-		return err
+		return redactTarget(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -215,4 +216,20 @@ func formatBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// redactTarget cuts the URL in a failed request's error down to scheme
+// and host. Webhook URLs usually carry their secret in the path (Discord,
+// Slack, Home Assistant) and ntfy topics are guessable names; the error
+// goes to the log and to the "send test notification" response.
+func redactTarget(err error) error {
+	var ue *url.Error
+	if !errors.As(err, &ue) {
+		return err
+	}
+	target := "<url>"
+	if u, perr := url.Parse(ue.URL); perr == nil && u.Host != "" {
+		target = u.Scheme + "://" + u.Host + "/…"
+	}
+	return &url.Error{Op: ue.Op, URL: target, Err: ue.Err}
 }
