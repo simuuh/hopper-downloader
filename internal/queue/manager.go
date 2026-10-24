@@ -1195,6 +1195,29 @@ func (m *Manager) relPathFor(it *Item, info *plugins.FileInfo) string {
 // run through SanitizeFilename here: Path may legitimately be
 // multi-segment (e.g. "movies/2026"), which SanitizeFilename's
 // single-path-element rules would collapse to just "2026".
+// sanitizePackagePath cleans a "save to" path segment by segment:
+// SanitizeFilename on each (Windows-reserved names, "name:stream",
+// trailing dots and spaces, length), dropping empty, "." and ".."
+// segments, at most maxPackagePathDepth of them. "" stays "" (no
+// override).
+func sanitizePackagePath(path string) string {
+	var segs []string
+	for _, seg := range strings.Split(strings.ReplaceAll(path, "\\", "/"), "/") {
+		seg = strings.TrimSpace(seg)
+		if seg == "" || seg == "." || seg == ".." {
+			continue
+		}
+		segs = append(segs, pathsafe.SanitizeFilename(seg))
+		if len(segs) == maxPackagePathDepth {
+			break
+		}
+	}
+	return strings.Join(segs, "/")
+}
+
+// maxPackagePathDepth caps how many folders a "save to" path may nest.
+const maxPackagePathDepth = 8
+
 func packageDir(pkg *Package) string {
 	if dir := strings.Trim(strings.ReplaceAll(pkg.Path, "\\", "/"), "/"); dir != "" {
 		return dir
@@ -2564,7 +2587,12 @@ func (m *Manager) SetPriority(id string, p Priority) error {
 // m.packages, the same late-binding pattern matchHoster uses for
 // account changes) — no requeue needed, though an item that's already
 // mid-download keeps writing to wherever it already started.
+//
+// Each segment of path is cleaned like a file name (see
+// sanitizePackagePath), so the folders it creates are valid on every
+// platform; SafeJoin still guards against leaving the download path.
 func (m *Manager) SetPackagePath(id, path string) (*Package, error) {
+	path = sanitizePackagePath(path)
 	m.mu.Lock()
 	pkg, ok := m.packages[id]
 	if !ok {

@@ -104,3 +104,20 @@ func TestAddLinks_PersistsAllOrNothing(t *testing.T) {
 		t.Fatalf("%d items in the queue after a failed add, want %d", after, before)
 	}
 }
+
+// A package's "save to" path is cleaned segment by segment (N5).
+func TestSanitizePackagePath(t *testing.T) {
+	cases := map[string]string{
+		"":                        "",
+		"Movies/2026":             "Movies/2026",
+		`Movies\Series\`:          "Movies/Series",
+		"a/./b/../c":              "a/b/c",
+		"CON/name:stream/trail. ": "_CON/name_stream/trail",
+		"/1/2/3/4/5/6/7/8/9/10":   "1/2/3/4/5/6/7/8",
+	}
+	for in, want := range cases {
+		if got := sanitizePackagePath(in); got != want {
+			t.Errorf("sanitizePackagePath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
