@@ -426,7 +426,7 @@ func (m *Manager) resumeInterruptedExtractions() {
 	m.mu.Unlock()
 
 	for _, it := range updated {
-		m.publish(Event{Type: EventItemUpdated, Item: it})
+		m.publishItem(it)
 	}
 	if !resume {
 		for _, it := range updated {
@@ -1072,7 +1072,7 @@ func (m *Manager) setRetryAfter(id string, at time.Time) {
 	cp := *it
 	m.mu.Unlock()
 
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 }
 
 // setCaptchaURL records that id needs a captcha solved before it can
@@ -1098,7 +1098,7 @@ func (m *Manager) setCaptchaURL(id, imageURL string) {
 	cp := *it
 	m.mu.Unlock()
 
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 }
 
 // ErrNoCaptchaPending is returned by SolveCaptcha when id has no
@@ -1137,7 +1137,7 @@ func (m *Manager) SolveCaptcha(id, solution string) error {
 	m.captchaSolutions[id] = solution
 	m.captchaMu.Unlock()
 
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 	m.wakeAsync()
 	return nil
 }
@@ -1219,9 +1219,11 @@ func (m *Manager) updateProgress(id string, p downloader.ProgressUpdate) {
 	it.Speed = p.Speed
 	it.UpdatedAt = time.Now()
 	cp := *it
-	m.mu.Unlock()
-
+	// Published inside the lock (publish never blocks): progress is the
+	// most frequent event, and published after unlocking it could arrive
+	// after a newer state change (done, paused) or after item_removed.
 	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.mu.Unlock()
 }
 
 // updateHosterKey persists a corrected HosterKey for id (see run()'s late
@@ -1243,7 +1245,7 @@ func (m *Manager) updateHosterKey(id, hosterKey string) {
 	cp := *it
 	m.mu.Unlock()
 
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 }
 
 func (m *Manager) fail(id, msg string) {
@@ -1274,7 +1276,7 @@ func (m *Manager) fail(id, msg string) {
 	m.mu.Unlock()
 
 	m.log.Warn("queue: item failed", "item_id", id, "error", msg)
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 	m.checkFinished(id)
 }
 
@@ -1354,7 +1356,7 @@ func (m *Manager) failTransient(id, msg string) {
 	m.mu.Unlock()
 
 	m.log.Warn("queue: transient failure, retrying later", "item_id", id, "attempt", cp.Attempts, "retry_in", delay, "error", msg)
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 	m.armWakeAt(at)
 }
 
@@ -1405,7 +1407,7 @@ func (m *Manager) complete(id string, res *downloader.Result) {
 	cp := *it
 	m.mu.Unlock()
 
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 
 	m.maybeExtract(&cp)
 	m.checkFinished(id)
@@ -1778,7 +1780,7 @@ func (m *Manager) setExtractState(packageID, group string, state ExtractState, e
 	m.mu.Unlock()
 
 	for _, it := range updated {
-		m.publish(Event{Type: EventItemUpdated, Item: it})
+		m.publishItem(it)
 	}
 }
 
@@ -1808,7 +1810,7 @@ func (m *Manager) markExtractPending(packageID, group string) {
 	m.mu.Unlock()
 
 	for _, it := range updated {
-		m.publish(Event{Type: EventItemUpdated, Item: it})
+		m.publishItem(it)
 	}
 }
 
@@ -1850,7 +1852,7 @@ func (m *Manager) beginExtraction(packageID, group string, siblings []*Item) boo
 	m.mu.Unlock()
 
 	for _, it := range updated {
-		m.publish(Event{Type: EventItemUpdated, Item: it})
+		m.publishItem(it)
 	}
 	return true
 }
@@ -2342,7 +2344,7 @@ func (m *Manager) insertItems(items []*Item) ([]*Item, error) {
 	m.mu.Unlock()
 
 	for _, cp := range out {
-		m.publish(Event{Type: EventItemUpdated, Item: cp})
+		m.publishItem(cp)
 	}
 
 	m.runMu.Lock()
@@ -2425,7 +2427,7 @@ func (m *Manager) requeueMany(ids []string, fromStates ...State) (int, []error) 
 	m.mu.Unlock()
 
 	for _, it := range updated {
-		m.publish(Event{Type: EventItemUpdated, Item: it})
+		m.publishItem(it)
 	}
 	if len(updated) > 0 {
 		m.wakeAsync()
@@ -2471,7 +2473,7 @@ func (m *Manager) Pause(id string) error {
 		}
 		m.activeMu.Unlock()
 	}
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 	return nil
 }
 
@@ -2551,7 +2553,7 @@ func (m *Manager) SetPriority(id string, p Priority) error {
 	cp := *it
 	m.mu.Unlock()
 
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 	m.wakeAsync()
 	return nil
 }
@@ -2689,7 +2691,7 @@ func (m *Manager) Reorder(ids []string) error {
 	m.mu.Unlock()
 
 	for _, cp := range updated {
-		m.publish(Event{Type: EventItemUpdated, Item: cp})
+		m.publishItem(cp)
 	}
 	return nil
 }
@@ -2737,7 +2739,9 @@ func (m *Manager) ListPackages() []*Package {
 // Subscribe registers for queue Events. The returned cancel func must be
 // called when the subscriber is done to release its channel.
 func (m *Manager) Subscribe() (<-chan Event, func()) {
-	ch := make(chan Event, 32)
+	// Room for a bulk action on a big queue; a subscriber that still
+	// falls behind is closed (see publish).
+	ch := make(chan Event, 256)
 	m.subMu.Lock()
 	id := m.nextSub
 	m.nextSub++
@@ -2755,14 +2759,36 @@ func (m *Manager) Subscribe() (<-chan Event, func()) {
 	return ch, cancel
 }
 
+// publish hands ev to every subscriber without ever blocking. A
+// subscriber whose buffer is full has fallen behind (a ResumeAll on a
+// big queue easily sends more than it holds): instead of silently losing
+// events it is closed and dropped, so the WebSocket ends and the Web UI
+// reconnects and reloads the whole queue.
 func (m *Manager) publish(ev Event) {
 	m.subMu.Lock()
 	defer m.subMu.Unlock()
-	for _, ch := range m.subs {
+	for id, ch := range m.subs {
 		select {
 		case ch <- ev:
 		default:
+			m.log.Warn("queue: event subscriber fell behind, closing it so it reloads", "subscriber", id)
+			delete(m.subs, id)
+			close(ch)
 		}
+	}
+}
+
+// publishItem publishes an update of it unless it was removed in the
+// meantime. Holding the read lock while publishing orders the event
+// before the item_removed of a concurrent Cancel, which deletes the item
+// under the write lock and publishes after that; without it an update
+// copied just before the removal could arrive after item_removed and
+// bring the item back in the Web UI.
+func (m *Manager) publishItem(it *Item) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.items[it.ID]; ok {
+		m.publish(Event{Type: EventItemUpdated, Item: it})
 	}
 }
 
