@@ -17,7 +17,7 @@ extraction was killed along with the process that started it. On the next
 startup, `queue.Manager` automatically resets any item still in that
 state (or waiting in "Waiting to extract…") to `extract_failed` with the message "extraction interrupted by
 restart — use re-extract button" — you don't need to do anything but
-click that button (`ItemRow`'s archive icon) to retry. If you're seeing a
+click that button (`ItemRow`'s unpack icon: an open box with an arrow rising out of it) to retry. If you're seeing a
 persistently stuck "Extracting…" item that *didn't* recover after a
 restart, that's unexpected — check hopperd actually restarted (its
 startup log line) rather than just the Web UI reconnecting.

@@ -277,12 +277,12 @@ export function ItemRow({
             </span>
           ) : (
             <button className="icon-btn" title="Re-extract" onClick={handleReExtractClick}>
-              <i className="ti ti-archive" />
+              <i className="ti ti-unpack" />
             </button>
           ))}
         {canExtract && (
           <button className="icon-btn" title="Extract now" onClick={() => onRetryExtract(item.id)}>
-            <i className="ti ti-archive" />
+            <i className="ti ti-unpack" />
           </button>
         )}
         {editable && (
