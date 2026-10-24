@@ -27,6 +27,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Clients only send control frames; anything bigger is not ours.
 	conn.SetReadLimit(wsReadLimit)
+	// The hijacked connection still carries readDeadline's deadline for
+	// the handshake request; the stream itself lives until the client
+	// leaves or the token expires.
+	_ = conn.UnderlyingConn().SetReadDeadline(time.Time{})
 
 	// The token was checked once at the handshake; end the session when it
 	// expires instead of streaming events to it indefinitely. The client

@@ -145,7 +145,20 @@ type Server struct {
 	loginLimiters *ipLimiterStore
 	upgrader      websocket.Upgrader
 	srv           *http.Server
+	// bodyTimeout/importBodyTimeout bound how long reading one request
+	// may take (see readDeadline); fields so tests can shorten them.
+	bodyTimeout       time.Duration
+	importBodyTimeout time.Duration
 }
+
+// Per-request read deadlines (see readDeadline). Generous: they only
+// have to stop a client that trickles a body byte by byte, not a slow
+// but working link — an import of the full 32 MiB within 10 minutes
+// needs about 55 KiB/s.
+const (
+	bodyReadTimeout       = 2 * time.Minute
+	importBodyReadTimeout = 10 * time.Minute
+)
 
 // New builds a Server. Call ListenAndServe to start it.
 func New(cfg Config, q QueueService, acc AccountService, pl PluginService, st SettingsService, statsSvc StatsService, dlcClient *http.Client, webUI fs.FS, log *slog.Logger) *Server {
@@ -177,6 +190,9 @@ func New(cfg Config, q QueueService, acc AccountService, pl PluginService, st Se
 		dlcClient:     dlcClient,
 		limiters:      newIPLimiterStore(cfg.RateLimitRPM, cfg.RateLimitBurst),
 		loginLimiters: newIPLimiterStore(loginAttemptsPerMinute, loginBurst),
+
+		bodyTimeout:       bodyReadTimeout,
+		importBodyTimeout: importBodyReadTimeout,
 	}
 	s.upgrader = websocket.Upgrader{
 		ReadBufferSize:  4096,
@@ -252,7 +268,27 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/", http.FileServer(http.FS(s.webUI)))
 	}
 
-	return s.securityHeaders(s.cors(s.rateLimit(mux)))
+	return s.readDeadline(s.securityHeaders(s.cors(s.rateLimit(mux))))
+}
+
+// readDeadline gives every request a deadline for reading it, including
+// its body. http.Server's own ReadTimeout would do the same but can't be
+// relaxed per request: the WebSocket would be cut after it (handleWebSocket
+// clears the deadline after the upgrade instead) and imports need longer.
+// Without any, a client could send a body one byte at a time and hold a
+// connection and its handler forever — the login endpoint included, which
+// needs no token. Outermost, so it sees the server's own ResponseWriter.
+func (s *Server) readDeadline(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d := s.bodyTimeout
+		if r.URL.Path == "/api/v1/import" {
+			d = s.importBodyTimeout
+		}
+		if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(d)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			s.log.Debug("api: set read deadline", "error", err)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -278,7 +314,8 @@ func (s *Server) ListenAndServe() error {
 		ReadHeaderTimeout: s.cfg.ReadHeaderTimeout,
 		// Closes idle keep-alive connections. No ReadTimeout/WriteTimeout:
 		// they would also cut long-lived WebSocket streams and large
-		// imports on slow links; request bodies are size-capped instead.
+		// imports on slow links; readDeadline sets one per request
+		// instead, and request bodies are size-capped.
 		IdleTimeout: 2 * time.Minute,
 	}
 	var err error
