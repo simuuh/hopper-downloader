@@ -162,7 +162,11 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 		global := e.globalLimiter.Load()
 		n, readErr := body.Read(buf[:readSize(len(buf), global, hoster)])
 		if n > 0 {
-			watchdog.Reset(e.stallTimeout)
+			// Waiting for the bandwidth limiter is our own doing, not a
+			// silent server: the watchdog is paused for it and restarted
+			// once the bytes may be written. Otherwise a low limit (or
+			// many chunks sharing it) aborted healthy transfers as stalled.
+			watchdog.Stop()
 			if global != nil {
 				if werr := global.WaitN(ctx, n); werr != nil {
 					return werr
@@ -173,6 +177,7 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 					return werr
 				}
 			}
+			watchdog.Reset(e.stallTimeout)
 			// A local write error (disk full, permissions, a vanished
 			// mount) won't go away by fetching the same bytes again.
 			if _, werr := f.WriteAt(buf[:n], offset); werr != nil {
