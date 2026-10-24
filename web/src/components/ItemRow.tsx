@@ -185,6 +185,11 @@ export function ItemRow({
             {item.error}
           </div>
         )}
+        {item.extract_state === 'extract_queued' && (
+          <div className="item-extract-status queued" title="One archive is extracted at a time">
+            ⏳ Waiting to extract — another archive is being extracted
+          </div>
+        )}
         {item.extract_state === 'extracting' && <div className="item-extract-status extracting">Extracting…</div>}
         {item.extract_state === 'extracted' && <div className="item-extract-status extracted">✓ Extracted</div>}
         {item.extract_state === 'extract_failed' && (

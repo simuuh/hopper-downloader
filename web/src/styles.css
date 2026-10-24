@@ -836,6 +836,9 @@ textarea.url-input {
   text-overflow: ellipsis;
   margin-top: 1px;
 }
+.item-extract-status.queued {
+  color: var(--state-waiting);
+}
 .item-extract-status.extracting {
   color: var(--accent);
 }
