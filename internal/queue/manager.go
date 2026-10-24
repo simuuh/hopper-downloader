@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	mrand "math/rand/v2"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -959,7 +960,7 @@ func (m *Manager) tryFreeFallback(h *runHandle, it *Item, hoster plugins.Hoster,
 
 	var retryErr plugins.ErrRetryAfter
 	if errors.As(err, &retryErr) {
-		at := time.Now().Add(time.Duration(retryErr.Seconds) * time.Second)
+		at := time.Now().Add(hosterWait(retryErr.Seconds))
 		m.finishWithIntentCheck(h, it.ID, func() { m.setRetryAfter(it.ID, at) })
 		m.armWakeAt(at)
 		return "", false
@@ -1241,6 +1242,30 @@ func (m *Manager) fail(id, msg string) {
 // maxAutoRetryDelay caps the exponential automatic-retry backoff.
 const maxAutoRetryDelay = 30 * time.Minute
 
+// maxHosterWait caps a wait a hoster asks for (plugins.ErrRetryAfter).
+const maxHosterWait = 24 * time.Hour
+
+// hosterWait turns a hoster's requested wait into a duration between one
+// second and maxHosterWait. Seconds come straight from the hoster's API
+// (a wait_time field); a huge value used to overflow time.Duration into a
+// wait in the past, a zero or negative one meant retrying at once.
+func hosterWait(seconds int) time.Duration {
+	switch {
+	case seconds < 1:
+		return time.Second
+	case int64(seconds) >= int64(maxHosterWait/time.Second):
+		return maxHosterWait
+	default:
+		return time.Duration(seconds) * time.Second
+	}
+}
+
+// jitter spreads d by ±15 %, so items that failed together (a hoster
+// outage) don't all retry in the same second.
+func jitter(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * (0.85 + mrand.Float64()*0.3)) //nolint:gosec // G404: retry-delay jitter, not a security context
+}
+
 // failMaybeTransient is fail() for errors that may or may not be worth an
 // automatic retry: a definite "file not found" is permanent, anything
 // else coming back from a hoster plugin (temporary unavailability, rate
@@ -1276,6 +1301,7 @@ func (m *Manager) failTransient(id, msg string) {
 	if delay <= 0 || delay > maxAutoRetryDelay {
 		delay = maxAutoRetryDelay
 	}
+	delay = min(jitter(delay), maxAutoRetryDelay)
 	at := time.Now().Add(delay)
 	it.State = StateQueued
 	it.RetryAfter = &at

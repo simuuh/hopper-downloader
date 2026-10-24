@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -381,5 +382,33 @@ func TestManager_PersistsAndReloadsState(t *testing.T) {
 	}
 	if reloaded.Priority != PriorityHigh {
 		t.Errorf("expected priority to survive reload, got %s", reloaded.Priority)
+	}
+}
+
+// A hoster's wait is kept within one second and a day, whatever its API
+// sends (N6).
+func TestHosterWait(t *testing.T) {
+	cases := []struct {
+		secs int
+		want time.Duration
+	}{
+		{-5, time.Second},
+		{0, time.Second},
+		{90, 90 * time.Second},
+		{math.MaxInt, maxHosterWait},
+		{int(maxHosterWait/time.Second) + 1, maxHosterWait},
+	}
+	for _, c := range cases {
+		if got := hosterWait(c.secs); got != c.want {
+			t.Errorf("hosterWait(%d) = %s, want %s", c.secs, got, c.want)
+		}
+	}
+}
+
+func TestJitter_StaysWithinFifteenPercent(t *testing.T) {
+	for i := 0; i < 1000; i++ {
+		if got := jitter(time.Minute); got < 51*time.Second || got > 69*time.Second {
+			t.Fatalf("jitter(1m) = %s, want within ±15%%", got)
+		}
 	}
 }
