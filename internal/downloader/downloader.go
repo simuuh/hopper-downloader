@@ -285,7 +285,7 @@ func (e *Engine) Download(ctx context.Context, req Request) (*Result, error) {
 func (e *Engine) transfer(ctx context.Context, req Request, dest string) (*Result, error) {
 	remote, probeErr := probe(ctx, e.client, req.URL)
 	if probeErr != nil && req.ExpectedSize <= 0 {
-		return nil, fmt.Errorf("downloader: probe %s: %w", req.URL, probeErr)
+		return nil, fmt.Errorf("downloader: probe %s: %w", redactURL(req.URL), probeErr)
 	}
 	size, supportsRange := remote.size, remote.ranges
 	// chunkSize is the length the chunk ranges (and therefore the

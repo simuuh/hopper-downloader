@@ -98,7 +98,7 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 
 	resp, err := e.client.Do(httpReq)
 	if err != nil {
-		return stalled(fmt.Errorf("request failed: %w", err))
+		return stalled(fmt.Errorf("request failed: %w", redactErr(err)))
 	}
 	defer resp.Body.Close()
 
