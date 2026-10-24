@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type DragEvent } from 'react'
 import { AddLinkForm } from '../components/AddLinkForm'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { ImportDropzone } from '../components/ImportDropzone'
 import { ItemRow } from '../components/ItemRow'
 import { PageHeader } from '../components/Page'
@@ -100,6 +101,7 @@ export function QueuePage({
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  const [confirmClear, setConfirmClear] = useState<'done' | 'all' | null>(null)
   // info is a neutral (non-error) toast for confirmations.
   const [info, setInfo] = useState<string | null>(() =>
     sharedText ? 'Shared links are in the add field — review them and press Add.' : null,
@@ -358,6 +360,12 @@ export function QueuePage({
     await bulkCancel(items.filter(isFinished).map((i) => i.id))
   }
 
+  // clearAll removes everything except archives being extracted, which
+  // the server refuses to remove (their result would be lost).
+  async function clearAll() {
+    await bulkCancel(items.filter((i) => i.extract_state !== 'extracting').map((i) => i.id))
+  }
+
   async function setPriority(id: string, priority: QueueItem['priority']) {
     try {
       await api.setPriority(id, priority)
@@ -522,6 +530,8 @@ export function QueuePage({
   const hasActiveItems = items.some((i) => i.state === 'queued' || i.state === 'downloading')
   const pausedCount = items.filter((i) => i.state === 'paused').length
   const finishedCount = items.filter(isFinished).length
+  const extractingCount = items.filter((i) => i.extract_state === 'extracting').length
+  const unfinishedCount = items.filter((i) => i.state !== 'done').length
 
   return (
     <>
@@ -647,11 +657,60 @@ export function QueuePage({
           </button>
         ))}
         {finishedCount > 0 && (
-          <button type="button" className="btn small" disabled={busy} onClick={() => void clearDone()}>
+          <button type="button" className="btn small" disabled={busy} onClick={() => setConfirmClear('done')}>
             Clear done
           </button>
         )}
+        {items.length > 0 && (
+          <button type="button" className="btn small danger" disabled={busy} onClick={() => setConfirmClear('all')}>
+            Clear all
+          </button>
+        )}
       </div>
+
+      {confirmClear === 'done' && (
+        <ConfirmDialog
+          title="Clear finished items?"
+          confirmLabel={`Clear ${finishedCount}`}
+          onCancel={() => setConfirmClear(null)}
+          onConfirm={() => {
+            setConfirmClear(null)
+            void clearDone()
+          }}
+        >
+          <p>
+            Removes {finishedCount} finished item{finishedCount === 1 ? '' : 's'} from the queue. The files stay on disk.
+          </p>
+          <p>Archives that aren't extracted yet stay in the queue.</p>
+        </ConfirmDialog>
+      )}
+      {confirmClear === 'all' && (
+        <ConfirmDialog
+          title="Clear the whole queue?"
+          confirmLabel={`Clear ${items.length - extractingCount}`}
+          onCancel={() => setConfirmClear(null)}
+          onConfirm={() => {
+            setConfirmClear(null)
+            void clearAll()
+          }}
+        >
+          <p>
+            Removes {items.length - extractingCount} item{items.length - extractingCount === 1 ? '' : 's'} from the queue. Finished files stay on
+            disk.
+          </p>
+          {unfinishedCount > 0 && (
+            <p>
+              {unfinishedCount} unfinished download{unfinishedCount === 1 ? ' is' : 's are'} stopped and the partial data is deleted.
+            </p>
+          )}
+          {extractingCount > 0 && (
+            <p>
+              {extractingCount} item{extractingCount === 1 ? ' is' : 's are'} being extracted and stay{extractingCount === 1 ? 's' : ''} in the
+              queue.
+            </p>
+          )}
+        </ConfirmDialog>
+      )}
 
       {items.length === 0 ? (
         <div className="empty-state">Queue is empty. Add a link above.</div>

@@ -1040,6 +1040,21 @@ textarea.url-input {
   gap: 8px;
 }
 
+/* ConfirmDialog: same overlay/box as the captcha modal, a bit wider */
+.confirm-modal {
+  width: 400px;
+}
+.confirm-modal-body {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.confirm-modal-body p {
+  margin: 0 0 6px;
+}
+.confirm-modal-body p:last-child {
+  margin-bottom: 0;
+}
+
 /* "Edit link" dialog: same overlay/box as the captcha modal, wider */
 .edit-modal {
   width: 520px;
