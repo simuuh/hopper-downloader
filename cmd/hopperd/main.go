@@ -342,6 +342,8 @@ func run() error {
 		RateLimitRPM:       cfg.RateLimit.RequestsPerMinute,
 		RateLimitBurst:     cfg.RateLimit.Burst,
 		ReadHeaderTimeout:  cfg.Server.ReadHeaderTimeout,
+		TLSCertFile:        cfg.Server.TLSCertFile,
+		TLSKeyFile:         cfg.Server.TLSKeyFile,
 		DLCEnabled:         cfg.DLC.Enabled,
 		DLCAPIURL:          cfg.DLC.JDAPIURL,
 		ReferralLinks:      cfg.Accounts.ReferralLinks,

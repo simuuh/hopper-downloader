@@ -64,8 +64,10 @@ type ServerConfig struct {
 	AdminPasswordHash  string        `yaml:"admin_password_hash"`
 	CORSAllowedOrigins []string      `yaml:"cors_allowed_origins"`
 	ReadHeaderTimeout  time.Duration `yaml:"read_header_timeout"`
-	TLSCertFile        string        `yaml:"tls_cert_file"`
-	TLSKeyFile         string        `yaml:"tls_key_file"`
+	// TLSCertFile/TLSKeyFile, when both set, make the API and Web UI
+	// listener serve HTTPS instead of plain HTTP (see Validate).
+	TLSCertFile string `yaml:"tls_cert_file"`
+	TLSKeyFile  string `yaml:"tls_key_file"`
 }
 
 // DownloadsConfig controls the download engine.
@@ -356,6 +358,8 @@ func applyEnvOverrides(cfg *Config) {
 	str("HOPPER_HOST", &cfg.Server.Host)
 	intVal("HOPPER_PORT", &cfg.Server.Port)
 	strSlice("HOPPER_CORS_ALLOWED_ORIGINS", &cfg.Server.CORSAllowedOrigins)
+	str("HOPPER_TLS_CERT_FILE", &cfg.Server.TLSCertFile)
+	str("HOPPER_TLS_KEY_FILE", &cfg.Server.TLSKeyFile)
 
 	str("HOPPER_DOWNLOADS_PATH", &cfg.Downloads.Path)
 	intVal("HOPPER_PARALLEL_FILES", &cfg.Downloads.ParallelFiles)
@@ -406,6 +410,9 @@ func (c *Config) Validate() error {
 	}
 	if !strings.HasPrefix(c.Server.AdminPasswordHash, "$2") {
 		return fmt.Errorf("server.admin_password_hash does not look like a bcrypt hash (expected a $2.. prefix)")
+	}
+	if (c.Server.TLSCertFile == "") != (c.Server.TLSKeyFile == "") {
+		return fmt.Errorf("server.tls_cert_file and server.tls_key_file must be set together")
 	}
 
 	if strings.TrimSpace(c.Accounts.EncryptionKey) == "" {

@@ -33,6 +33,10 @@ server:
   token_ttl: 24h
   cors_allowed_origins: []
   read_header_timeout: 10s
+  # Serve the API and Web UI over HTTPS (both or neither; env
+  # HOPPER_TLS_CERT_FILE / HOPPER_TLS_KEY_FILE). Without them the
+  # password and session token cross the LAN in plain text — use this or
+  # a TLS-terminating reverse proxy when hopperd isn't only on localhost.
   # tls_cert_file: /config/tls/cert.pem
   # tls_key_file: /config/tls/key.pem
 

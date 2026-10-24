@@ -101,6 +101,10 @@ type Config struct {
 	RateLimitRPM       int
 	RateLimitBurst     int
 	ReadHeaderTimeout  time.Duration
+	// TLSCertFile/TLSKeyFile, when both set, serve HTTPS
+	// (config.ServerConfig).
+	TLSCertFile string
+	TLSKeyFile  string
 	// DLCEnabled gates .dlc file imports (config.DLC.Enabled); plaintext
 	// link-list imports are always available.
 	DLCEnabled bool
@@ -277,8 +281,14 @@ func (s *Server) ListenAndServe() error {
 		// imports on slow links; request bodies are size-capped instead.
 		IdleTimeout: 2 * time.Minute,
 	}
-	s.log.Info("api: listening", "addr", addr)
-	err := s.srv.ListenAndServe()
+	var err error
+	if s.cfg.TLSCertFile != "" && s.cfg.TLSKeyFile != "" {
+		s.log.Info("api: listening (https)", "addr", addr)
+		err = s.srv.ListenAndServeTLS(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+	} else {
+		s.log.Info("api: listening", "addr", addr)
+		err = s.srv.ListenAndServe()
+	}
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

@@ -274,3 +274,15 @@ func TestLoad_NotifyEmptyEnvKeepsFileValue(t *testing.T) {
 		t.Error("invalid webhook URL accepted")
 	}
 }
+
+// A certificate without its key (or the other way round) is a config
+// error, not a silent fallback to plain HTTP.
+func TestLoad_TLSCertWithoutKeyRejected(t *testing.T) {
+	setValidSecrets(t)
+	t.Setenv("HOPPER_TLS_CERT_FILE", "/config/tls/cert.pem")
+
+	p := writeTemp(t, buildYAML(t, yamlOpts{}))
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for tls_cert_file without tls_key_file, got nil")
+	}
+}
