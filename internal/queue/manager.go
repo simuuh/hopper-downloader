@@ -1007,12 +1007,25 @@ func (m *Manager) tryFreeFallback(h *runHandle, it *Item, hoster plugins.Hoster,
 
 	var captchaErr plugins.ErrCaptchaRequired
 	if errors.As(err, &captchaErr) {
+		// The Web UI shows the image straight from this URL, so the
+		// viewer's browser fetches it: only https, never a plain-http or
+		// other address the hoster response happens to name.
+		if !isHTTPSURL(captchaErr.ImageURL) {
+			m.finishWithIntentCheck(h, it.ID, func() { m.fail(it.ID, "free download: hoster sent a captcha image that isn't an https URL") })
+			return "", false
+		}
 		m.finishWithIntentCheck(h, it.ID, func() { m.setCaptchaURL(it.ID, captchaErr.ImageURL) })
 		return "", false
 	}
 
 	m.finishWithIntentCheck(h, it.ID, func() { m.fail(it.ID, fmt.Sprintf("free download: %v", err)) })
 	return "", false
+}
+
+// isHTTPSURL reports whether raw is an absolute https URL.
+func isHTTPSURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Host != ""
 }
 
 // withCaptchaSolution returns acc unchanged unless a solution was
