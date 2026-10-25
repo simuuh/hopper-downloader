@@ -1162,15 +1162,6 @@ func (m *Manager) relPathFor(it *Item, info *plugins.FileInfo) string {
 	return m.joinPackageDir(it.PackageID, name)
 }
 
-// packageDir returns the subdirectory items in pkg download into: an
-// explicit "save to" override (pkg.Path — see SetPackagePath) if set,
-// else pkg.Name as before. This is cosmetic organization only, not the
-// security boundary: the downloader resolves the full RelPath via
-// pathsafe.SafeJoin against BaseDir regardless, which is what actually
-// rejects traversal — and is also why, unlike pkg.Name, pkg.Path isn't
-// run through SanitizeFilename here: Path may legitimately be
-// multi-segment (e.g. "movies/2026"), which SanitizeFilename's
-// single-path-element rules would collapse to just "2026".
 // sanitizePackagePath cleans a "save to" path segment by segment:
 // SanitizeFilename on each (Windows-reserved names, "name:stream",
 // trailing dots and spaces, length), dropping empty, "." and ".."
@@ -1194,6 +1185,15 @@ func sanitizePackagePath(path string) string {
 // maxPackagePathDepth caps how many folders a "save to" path may nest.
 const maxPackagePathDepth = 8
 
+// packageDir returns the subdirectory items in pkg download into: an
+// explicit "save to" override (pkg.Path — see SetPackagePath) if set,
+// else pkg.Name as before. This is cosmetic organization only, not the
+// security boundary: the downloader resolves the full RelPath via
+// pathsafe.SafeJoin against BaseDir regardless, which is what actually
+// rejects traversal — and is also why, unlike pkg.Name, pkg.Path isn't
+// run through SanitizeFilename here: Path may legitimately be
+// multi-segment (e.g. "movies/2026"), which SanitizeFilename's
+// single-path-element rules would collapse to just "2026".
 func packageDir(pkg *Package) string {
 	if dir := strings.Trim(strings.ReplaceAll(pkg.Path, "\\", "/"), "/"); dir != "" {
 		return dir
