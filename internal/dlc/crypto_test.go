@@ -2,7 +2,11 @@ package dlc
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -81,5 +85,25 @@ func TestFetchContainerKey_WrongIVFailsToProduceUsableKey(t *testing.T) {
 	}
 	if bytes.Equal(swapped, plaintext) {
 		t.Fatal("decrypting with key/IV swapped should not reproduce the original plaintext")
+	}
+}
+
+// A failed key-service request doesn't repeat the container key, which
+// sits in the request URL (N3).
+func TestFetchContainerKey_ErrorOmitsKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	defer srv.Close()
+
+	_, err := fetchContainerKey(context.Background(), srv.Client(), srv.URL, "SECRETCONTAINERKEY")
+	if err == nil {
+		t.Fatal("fetchContainerKey succeeded against a dropped connection")
+	}
+	if strings.Contains(err.Error(), "SECRETCONTAINERKEY") {
+		t.Fatalf("error leaks the container key: %v", err)
 	}
 }
