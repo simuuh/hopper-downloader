@@ -2967,8 +2967,15 @@ func (m *Manager) relPathLocked(it *Item) string {
 
 // joinPackageDir returns name (sanitized) inside package pkgID's download
 // directory. Caller holds m.mu.
+//
+// A name ending in ".part" or ".part.json" gets a "_" appended: the
+// downloader keeps an unfinished file X in "X.part" and its resume state
+// in "X.part.json", so such a download would overwrite another one's.
 func (m *Manager) joinPackageDir(pkgID, name string) string {
 	name = pathsafe.SanitizeFilename(name)
+	if lower := strings.ToLower(name); strings.HasSuffix(lower, ".part") || strings.HasSuffix(lower, ".part.json") {
+		name += "_"
+	}
 	pkg, ok := m.packages[pkgID]
 	if !ok {
 		return name

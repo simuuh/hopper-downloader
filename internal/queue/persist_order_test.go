@@ -121,3 +121,22 @@ func TestSanitizePackagePath(t *testing.T) {
 		}
 	}
 }
+
+// A download named like another one's temp or resume file is renamed so
+// it can't overwrite it (M20).
+func TestJoinPackageDir_AvoidsDownloaderWorkFiles(t *testing.T) {
+	mgr, _ := newTestManager(t, newTestStore(t), Config{ParallelFiles: 1})
+	cases := map[string]string{
+		"movie.mkv.part":      "movie.mkv.part_",
+		"movie.mkv.PART.json": "movie.mkv.PART.json_",
+		"example.part1.rar":   "example.part1.rar",
+	}
+	for in, want := range cases {
+		mgr.mu.RLock()
+		got := mgr.joinPackageDir("", in)
+		mgr.mu.RUnlock()
+		if got != want {
+			t.Errorf("joinPackageDir(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
