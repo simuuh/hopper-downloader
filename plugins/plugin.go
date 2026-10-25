@@ -174,8 +174,8 @@ type AccountInfo struct {
 // Real-Debrid's GET /user) instead of trusting stored credentials
 // blindly. The API calls it inline on POST /api/v1/accounts and
 // on-demand via POST /api/v1/accounts/{id}/validate; a plugin that
-// doesn't implement it (rapidgator, still a stub) reports unknown
-// validity rather than a false positive or negative.
+// doesn't implement it reports unknown validity rather than a false
+// positive or negative.
 type AccountValidator interface {
 	ValidateAccount(acc *Account) (*AccountInfo, error)
 }
