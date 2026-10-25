@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -100,5 +101,53 @@ func TestResultCache(t *testing.T) {
 	time.Sleep(60 * time.Millisecond)
 	if _, ok := c.Get("k"); ok {
 		t.Error("expired entry still returned")
+	}
+}
+
+// With the service's API down, Match runs for every added link: a failed
+// refresh is remembered for FailureBackoff instead of being retried per
+// call (M12), but not for another token.
+func TestHostCache_RemembersFailure(t *testing.T) {
+	var calls atomic.Int32
+	c := &HostCache{TTL: time.Hour, Fetch: func(string) (Hosts, error) {
+		calls.Add(1)
+		return nil, errors.New("api down")
+	}}
+	for i := 0; i < 5; i++ {
+		if _, err := c.Snapshot("token-a"); err == nil {
+			t.Fatal("Snapshot succeeded with a failing fetch")
+		}
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("%d fetches for 5 calls within the backoff, want 1", n)
+	}
+	_, _ = c.Snapshot("token-b")
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("%d fetches after switching token, want 2", n)
+	}
+}
+
+// Concurrent callers share one refresh (M12).
+func TestHostCache_OneRefreshAtATime(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	c := &HostCache{TTL: time.Hour, Fetch: func(string) (Hosts, error) {
+		calls.Add(1)
+		<-release
+		return Hosts{"host.example": true}, nil
+	}}
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = c.Snapshot("token")
+		}()
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("%d fetches for 10 concurrent calls, want 1", n)
 	}
 }

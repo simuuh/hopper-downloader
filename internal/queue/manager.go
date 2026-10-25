@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	mrand "math/rand/v2"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -196,6 +198,9 @@ type Manager struct {
 	activeMu  sync.Mutex
 	active    map[string]*runHandle
 	runningWG sync.WaitGroup
+	// extractWG tracks runExtraction goroutines (see startExtraction), so
+	// Shutdown waits for an extraction to record its outcome.
+	extractWG sync.WaitGroup
 
 	// captchaSolutions holds a solution submitted via SolveCaptcha for an
 	// item whose next run() attempt hasn't consumed it yet — see
@@ -336,7 +341,7 @@ func (m *Manager) Start(ctx context.Context) {
 	m.runCtx = ctx
 	m.runMu.Unlock()
 
-	m.resetInterruptedExtractions()
+	m.resumeInterruptedExtractions()
 
 	m.sched.Every(ctx, m.cfg.PollInterval, func(ctx context.Context) { m.dispatch(ctx) })
 
@@ -367,44 +372,79 @@ func (m *Manager) Start(ctx context.Context) {
 	m.mu.RUnlock()
 }
 
-// resetInterruptedExtractions recovers items left in
-// ExtractStateExtracting or ExtractStateQueued by a prior hopperd crash
-// or restart: runExtraction only ever runs while the process that started
-// it is alive, so any item still showing "extracting" when a new Manager
-// starts didn't finish — it just never got the chance to report success
-// or failure. Left alone, it would sit in the Web UI showing
-// "Extracting…" forever, since RetryExtraction only accepts an item
-// already in ExtractStateExtractFailed. Called once, at startup, before
-// the dispatcher (and therefore any real download or extraction) begins.
-func (m *Manager) resetInterruptedExtractions() {
+// resumeInterruptedExtractions picks up extractions a prior shutdown or
+// crash interrupted: runExtraction only runs while the process that
+// started it is alive, so an item still "extracting" or "extract_queued"
+// at startup never finished. With auto-extract on, its group goes back to
+// pending and is extracted again (unrar overwrites what the interrupted
+// run left); with it off, it becomes extract_failed with a hint to the
+// re-extract button instead of showing "Extracting…" forever. Called
+// once from Start, after runCtx is set.
+func (m *Manager) resumeInterruptedExtractions() {
 	const msg = "extraction interrupted by restart — use re-extract button"
+	resume := m.extractor != nil && m.extractSettings != nil && m.extractSettings.ExtractEnabled()
 
 	m.mu.Lock()
 	var updated []*Item
+	groups := map[string]*Item{}
 	for _, it := range m.items {
+		if it.ExtractState == ExtractStatePending {
+			// Interrupted before it got to extracting (waiting for its
+			// parts on disk), or every part finished just before the
+			// crash; maybeExtract checks that all parts are done.
+			if resume && it.State == StateDone && it.Filename != "" {
+				key := it.PackageID + "|" + extract.GroupBase(it.Filename)
+				if _, ok := groups[key]; !ok {
+					cp := *it
+					groups[key] = &cp
+				}
+			}
+			continue
+		}
 		if it.ExtractState != ExtractStateExtracting && it.ExtractState != ExtractStateQueued {
 			continue
 		}
-		it.ExtractState = ExtractStateExtractFailed
-		it.ExtractError = msg
+		if resume {
+			it.ExtractState = ExtractStatePending
+			it.ExtractError = ""
+		} else {
+			it.ExtractState = ExtractStateExtractFailed
+			it.ExtractError = msg
+		}
 		it.UpdatedAt = time.Now()
 		if err := m.store.PutItem(it); err != nil {
 			m.log.Error("queue: persist item", "item_id", it.ID, "error", err)
 		}
 		cp := *it
 		updated = append(updated, &cp)
+		if resume && it.State == StateDone && it.Filename != "" {
+			key := it.PackageID + "|" + extract.GroupBase(it.Filename)
+			if _, ok := groups[key]; !ok {
+				groups[key] = &cp
+			}
+		}
 	}
 	m.mu.Unlock()
 
 	for _, it := range updated {
-		m.log.Warn("queue: extraction interrupted by restart, marked extract_failed", "item_id", it.ID)
-		m.publish(Event{Type: EventItemUpdated, Item: it})
+		m.publishItem(it)
+	}
+	if !resume {
+		for _, it := range updated {
+			m.log.Warn("queue: extraction interrupted by restart, marked extract_failed", "item_id", it.ID)
+		}
+		return
+	}
+	for _, it := range groups {
+		m.log.Info("queue: extraction interrupted by restart, extracting again", "item_id", it.ID, "archive", extract.GroupBase(it.Filename))
+		m.maybeExtract(it)
 	}
 }
 
 // Shutdown cancels any in-flight downloads (returning them to StateQueued
 // so they resume cleanly on next start, rather than StateError) and waits
-// for their goroutines to exit, up to ctx's deadline.
+// for their goroutines, and for running extractions to record their
+// outcome, up to ctx's deadline. No extraction starts once it has begun.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.closingMu.Lock()
 	m.closing = true
@@ -418,6 +458,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {
 		m.runningWG.Wait()
+		m.extractWG.Wait()
 		close(done)
 	}()
 	select {
@@ -544,6 +585,10 @@ func (m *Manager) pickNext(ctx context.Context) (*Item, *runHandle) {
 
 	now := time.Now()
 	order := newQueueOrder(m.items)
+	blocked := func(*Item) bool { return false }
+	if m.cfg.SequentialParts {
+		blocked = order.sequentialBlocked(m.items)
+	}
 	var best *Item
 	for _, it := range m.items {
 		if !it.runnable(now) {
@@ -552,7 +597,7 @@ func (m *Manager) pickNext(ctx context.Context) (*Item, *runHandle) {
 		if _, running := m.active[it.ID]; running {
 			continue
 		}
-		if m.cfg.SequentialParts && m.isSequentialBlocked(it) {
+		if blocked(it) {
 			continue
 		}
 		if best == nil || order.less(it, best) {
@@ -576,47 +621,6 @@ func (m *Manager) pickNext(ctx context.Context) (*Item, *runHandle) {
 	cp := *best
 	m.publish(Event{Type: EventItemUpdated, Item: &cp})
 	return &cp, h
-}
-
-// isSequentialBlocked reports whether it must not start yet because a
-// lower-numbered part of the same archive set (same PackageID, same
-// extract.GroupBase) hasn't started yet (still StateQueued) — parts never
-// overtake each other. They may run side by side: once part1 has started,
-// part2 can take the next free slot, so parallel_files fills the topmost
-// package first instead of spreading over several packages.
-//
-// queueOrder already picks parts in part-number order; this guard covers
-// the case where a lower part exists but isn't runnable right now (e.g.
-// waiting on a hoster's retry_after), so a later part doesn't jump ahead.
-// StateError and StatePaused don't block, or one dead or paused part would
-// strand the rest of the set.
-//
-// Must be called with m.mu held.
-func (m *Manager) isSequentialBlocked(it *Item) bool {
-	if it.PackageID == "" || it.Filename == "" || !extract.IsArchive(it.Filename) {
-		return false
-	}
-	n, ok := extract.PartNumber(it.Filename)
-	if !ok {
-		return false
-	}
-	group := extract.GroupBase(it.Filename)
-	for _, sib := range m.items {
-		if sib.ID == it.ID || sib.PackageID != it.PackageID || sib.Filename == "" {
-			continue
-		}
-		if !extract.IsArchive(sib.Filename) || extract.GroupBase(sib.Filename) != group {
-			continue
-		}
-		sn, sok := extract.PartNumber(sib.Filename)
-		if !sok || sn >= n {
-			continue
-		}
-		if sib.State == StateQueued {
-			return true
-		}
-	}
-	return false
 }
 
 // matchHoster resolves the plugin that should handle rawURL against this
@@ -959,7 +963,7 @@ func (m *Manager) tryFreeFallback(h *runHandle, it *Item, hoster plugins.Hoster,
 
 	var retryErr plugins.ErrRetryAfter
 	if errors.As(err, &retryErr) {
-		at := time.Now().Add(time.Duration(retryErr.Seconds) * time.Second)
+		at := time.Now().Add(hosterWait(retryErr.Seconds))
 		m.finishWithIntentCheck(h, it.ID, func() { m.setRetryAfter(it.ID, at) })
 		m.armWakeAt(at)
 		return "", false
@@ -967,12 +971,25 @@ func (m *Manager) tryFreeFallback(h *runHandle, it *Item, hoster plugins.Hoster,
 
 	var captchaErr plugins.ErrCaptchaRequired
 	if errors.As(err, &captchaErr) {
+		// The Web UI shows the image straight from this URL, so the
+		// viewer's browser fetches it: only https, never a plain-http or
+		// other address the hoster response happens to name.
+		if !isHTTPSURL(captchaErr.ImageURL) {
+			m.finishWithIntentCheck(h, it.ID, func() { m.fail(it.ID, "free download: hoster sent a captcha image that isn't an https URL") })
+			return "", false
+		}
 		m.finishWithIntentCheck(h, it.ID, func() { m.setCaptchaURL(it.ID, captchaErr.ImageURL) })
 		return "", false
 	}
 
 	m.finishWithIntentCheck(h, it.ID, func() { m.fail(it.ID, fmt.Sprintf("free download: %v", err)) })
 	return "", false
+}
+
+// isHTTPSURL reports whether raw is an absolute https URL.
+func isHTTPSURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Host != ""
 }
 
 // withCaptchaSolution returns acc unchanged unless a solution was
@@ -1032,7 +1049,7 @@ func (m *Manager) setRetryAfter(id string, at time.Time) {
 	cp := *it
 	m.mu.Unlock()
 
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 }
 
 // setCaptchaURL records that id needs a captcha solved before it can
@@ -1058,7 +1075,7 @@ func (m *Manager) setCaptchaURL(id, imageURL string) {
 	cp := *it
 	m.mu.Unlock()
 
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 }
 
 // ErrNoCaptchaPending is returned by SolveCaptcha when id has no
@@ -1097,7 +1114,7 @@ func (m *Manager) SolveCaptcha(id, solution string) error {
 	m.captchaSolutions[id] = solution
 	m.captchaMu.Unlock()
 
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 	m.wakeAsync()
 	return nil
 }
@@ -1146,6 +1163,29 @@ func (m *Manager) relPathFor(it *Item, info *plugins.FileInfo) string {
 	return m.joinPackageDir(it.PackageID, name)
 }
 
+// sanitizePackagePath cleans a "save to" path segment by segment:
+// SanitizeFilename on each (Windows-reserved names, "name:stream",
+// trailing dots and spaces, length), dropping empty, "." and ".."
+// segments, at most maxPackagePathDepth of them. "" stays "" (no
+// override).
+func sanitizePackagePath(path string) string {
+	var segs []string
+	for _, seg := range strings.Split(strings.ReplaceAll(path, "\\", "/"), "/") {
+		seg = strings.TrimSpace(seg)
+		if seg == "" || seg == "." || seg == ".." {
+			continue
+		}
+		segs = append(segs, pathsafe.SanitizeFilename(seg))
+		if len(segs) == maxPackagePathDepth {
+			break
+		}
+	}
+	return strings.Join(segs, "/")
+}
+
+// maxPackagePathDepth caps how many folders a "save to" path may nest.
+const maxPackagePathDepth = 8
+
 // packageDir returns the subdirectory items in pkg download into: an
 // explicit "save to" override (pkg.Path — see SetPackagePath) if set,
 // else pkg.Name as before. This is cosmetic organization only, not the
@@ -1179,9 +1219,11 @@ func (m *Manager) updateProgress(id string, p downloader.ProgressUpdate) {
 	it.Speed = p.Speed
 	it.UpdatedAt = time.Now()
 	cp := *it
-	m.mu.Unlock()
-
+	// Published inside the lock (publish never blocks): progress is the
+	// most frequent event, and published after unlocking it could arrive
+	// after a newer state change (done, paused) or after item_removed.
 	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.mu.Unlock()
 }
 
 // updateHosterKey persists a corrected HosterKey for id (see run()'s late
@@ -1203,7 +1245,7 @@ func (m *Manager) updateHosterKey(id, hosterKey string) {
 	cp := *it
 	m.mu.Unlock()
 
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 }
 
 func (m *Manager) fail(id, msg string) {
@@ -1234,12 +1276,36 @@ func (m *Manager) fail(id, msg string) {
 	m.mu.Unlock()
 
 	m.log.Warn("queue: item failed", "item_id", id, "error", msg)
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 	m.checkFinished(id)
 }
 
 // maxAutoRetryDelay caps the exponential automatic-retry backoff.
 const maxAutoRetryDelay = 30 * time.Minute
+
+// maxHosterWait caps a wait a hoster asks for (plugins.ErrRetryAfter).
+const maxHosterWait = 24 * time.Hour
+
+// hosterWait turns a hoster's requested wait into a duration between one
+// second and maxHosterWait. Seconds come straight from the hoster's API
+// (a wait_time field); a huge value used to overflow time.Duration into a
+// wait in the past, a zero or negative one meant retrying at once.
+func hosterWait(seconds int) time.Duration {
+	switch {
+	case seconds < 1:
+		return time.Second
+	case int64(seconds) >= int64(maxHosterWait/time.Second):
+		return maxHosterWait
+	default:
+		return time.Duration(seconds) * time.Second
+	}
+}
+
+// jitter spreads d by ±15 %, so items that failed together (a hoster
+// outage) don't all retry in the same second.
+func jitter(d time.Duration) time.Duration {
+	return time.Duration(float64(d) * (0.85 + mrand.Float64()*0.3)) //nolint:gosec // G404: retry-delay jitter, not a security context
+}
 
 // failMaybeTransient is fail() for errors that may or may not be worth an
 // automatic retry: a definite "file not found" is permanent, anything
@@ -1276,6 +1342,7 @@ func (m *Manager) failTransient(id, msg string) {
 	if delay <= 0 || delay > maxAutoRetryDelay {
 		delay = maxAutoRetryDelay
 	}
+	delay = min(jitter(delay), maxAutoRetryDelay)
 	at := time.Now().Add(delay)
 	it.State = StateQueued
 	it.RetryAfter = &at
@@ -1289,7 +1356,7 @@ func (m *Manager) failTransient(id, msg string) {
 	m.mu.Unlock()
 
 	m.log.Warn("queue: transient failure, retrying later", "item_id", id, "attempt", cp.Attempts, "retry_in", delay, "error", msg)
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 	m.armWakeAt(at)
 }
 
@@ -1340,7 +1407,7 @@ func (m *Manager) complete(id string, res *downloader.Result) {
 	cp := *it
 	m.mu.Unlock()
 
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 
 	m.maybeExtract(&cp)
 	m.checkFinished(id)
@@ -1428,7 +1495,39 @@ func (m *Manager) maybeExtract(it *Item) {
 	if pkg != nil {
 		pkgPassword = pkg.Password
 	}
-	go m.runExtraction(firstPart, siblings, group, pkgPassword, "")
+	if !m.startExtraction(func() { m.runExtraction(firstPart, siblings, group, pkgPassword, "") }) {
+		m.releaseExtractClaim(triggerKey)
+	}
+}
+
+// ErrShuttingDown is returned when work is refused because Shutdown has
+// begun.
+var ErrShuttingDown = errors.New("queue: shutting down")
+
+// startExtraction runs fn (a runExtraction call) in a goroutine tracked
+// by extractWG and reports whether it did. Like the dispatcher's
+// runningWG.Add, the Add happens under closingMu, so none is added once
+// Shutdown has started waiting.
+func (m *Manager) startExtraction(fn func()) bool {
+	m.closingMu.Lock()
+	defer m.closingMu.Unlock()
+	if m.closing {
+		return false
+	}
+	m.extractWG.Add(1)
+	go func() {
+		defer m.extractWG.Done()
+		fn()
+	}()
+	return true
+}
+
+// releaseExtractClaim drops a group's extractTriggered claim that no
+// runExtraction will release.
+func (m *Manager) releaseExtractClaim(triggerKey string) {
+	m.extractTriggeredMu.Lock()
+	delete(m.extractTriggered, triggerKey)
+	m.extractTriggeredMu.Unlock()
 }
 
 // diskCheckAttempts/diskCheckInterval are the package-level defaults for
@@ -1513,12 +1612,27 @@ func (m *Manager) runExtraction(firstPart *Item, siblings []*Item, group, pkgPas
 		return
 	}
 	destDir := filepath.Dir(srcPath)
+	if firstPart.PackageID == "" {
+		// An archive without a package sits in the downloads root, next
+		// to every other download: its own folder keeps its files (and
+		// unrar's overwrite mode) away from them.
+		if sub := pathsafe.SanitizeFilename(group); sub != "" {
+			if dir, err := pathsafe.SafeJoin(destDir, sub); err == nil {
+				destDir = dir
+			}
+		}
+	}
+	if err := os.MkdirAll(destDir, 0o750); err != nil {
+		m.log.Error("queue: extract: create destination", "item_id", firstPart.ID, "error", err)
+		m.setExtractState(firstPart.PackageID, group, ExtractStateExtractFailed, err.Error())
+		return
+	}
 
 	// The group shows as queued only when it really has to wait, so a lone
 	// archive goes straight to "extracting". Waiting doesn't count against
 	// extractTimeout, which starts with the extraction itself below. A
 	// shutdown while queued leaves ExtractStateQueued persisted;
-	// resetInterruptedExtractions handles it on the next start.
+	// resumeInterruptedExtractions handles it on the next start.
 	select {
 	case m.extractSlot <- struct{}{}:
 	default:
@@ -1545,7 +1659,13 @@ func (m *Manager) runExtraction(firstPart *Item, siblings []*Item, group, pkgPas
 			break
 		}
 		if attempt < m.diskCheckAttempts-1 {
-			time.Sleep(m.diskCheckInterval)
+			select {
+			case <-time.After(m.diskCheckInterval):
+			case <-m.shutdownCtx().Done():
+				// Shutting down: the group is still pending, which
+				// resumeInterruptedExtractions picks up on the next start.
+				return
+			}
 		}
 	}
 	if !ready {
@@ -1598,6 +1718,14 @@ func (m *Manager) runExtraction(firstPart *Item, siblings []*Item, group, pkgPas
 	elapsed := time.Since(start).Round(time.Second)
 
 	if err != nil {
+		if m.shutdownCtx().Err() != nil {
+			// Stopped by hopperd shutting down, not a broken archive: the
+			// group stays "extracting" (checkFinished doesn't notify for
+			// it) and resumeInterruptedExtractions extracts it again on
+			// the next start.
+			m.log.Info("queue: extract interrupted by shutdown", "item_id", firstPart.ID, "archive", srcPath, "elapsed", elapsed)
+			return
+		}
 		m.log.Warn("queue: extract failed", "item_id", firstPart.ID, "archive", srcPath, "elapsed", elapsed, "error", err)
 		m.setExtractState(firstPart.PackageID, group, ExtractStateExtractFailed, err.Error())
 		return
@@ -1652,7 +1780,7 @@ func (m *Manager) setExtractState(packageID, group string, state ExtractState, e
 	m.mu.Unlock()
 
 	for _, it := range updated {
-		m.publish(Event{Type: EventItemUpdated, Item: it})
+		m.publishItem(it)
 	}
 }
 
@@ -1682,7 +1810,7 @@ func (m *Manager) markExtractPending(packageID, group string) {
 	m.mu.Unlock()
 
 	for _, it := range updated {
-		m.publish(Event{Type: EventItemUpdated, Item: it})
+		m.publishItem(it)
 	}
 }
 
@@ -1724,7 +1852,7 @@ func (m *Manager) beginExtraction(packageID, group string, siblings []*Item) boo
 	m.mu.Unlock()
 
 	for _, it := range updated {
-		m.publish(Event{Type: EventItemUpdated, Item: it})
+		m.publishItem(it)
 	}
 	return true
 }
@@ -1888,7 +2016,10 @@ func (m *Manager) RetryExtraction(id, extraPassword string) error {
 	}
 
 	m.setExtractState(pkgID, group, ExtractStatePending, "")
-	go m.runExtraction(firstPart, siblings, group, pkgPassword, extraPassword)
+	if !m.startExtraction(func() { m.runExtraction(firstPart, siblings, group, pkgPassword, extraPassword) }) {
+		m.releaseExtractClaim(triggerKey)
+		return ErrShuttingDown
+	}
 	return nil
 }
 
@@ -2025,7 +2156,10 @@ func (m *Manager) addItems(pkgID, rawURL string, opts AddOptions) ([]*Item, erro
 		if hoster, ok := m.matchHoster(rawURL); ok {
 			if exp, ok := hoster.(plugins.Expander); ok {
 				if links, expErr := exp.Expand(rawURL); expErr == nil && len(links) > 0 {
-					return m.addExpandedItems(pkgID, links, opts)
+					if links = m.externalLinksOnly(rawURL, links); len(links) > 0 {
+						return m.addExpandedItems(pkgID, links, opts)
+					}
+					return nil, fmt.Errorf("queue: container %q only points to internal addresses", rawURL)
 				}
 				// Expansion not usable right now (transient API error, or
 				// the plugin found nothing to expand) — fall through and
@@ -2041,6 +2175,44 @@ func (m *Manager) addItems(pkgID, rawURL string, opts AddOptions) ([]*Item, erro
 		return nil, err
 	}
 	return []*Item{it}, nil
+}
+
+// externalLinksOnly drops expanded links that point to this machine or
+// the local network. A container's links are chosen by whoever made the
+// container, not by the user, and hopperd would fetch them from inside
+// the LAN (router admin pages, cloud metadata at 169.254.169.254). Only
+// literal addresses and localhost are recognized; a public host name
+// resolving to a private address is not caught here.
+func (m *Manager) externalLinksOnly(container string, links []plugins.ExpandedLink) []plugins.ExpandedLink {
+	out := links[:0:0]
+	for _, l := range links {
+		if internalHost(l.URL) {
+			m.log.Warn("queue: skipping a container link to an internal address", "container", container, "link", l.URL)
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// internalHost reports whether rawURL's host is localhost or a loopback,
+// private, link-local or unspecified IP address.
+func internalHost(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() ||
+		addr.IsLinkLocalMulticast() || addr.IsUnspecified()
 }
 
 func validHTTPURL(rawURL string) error {
@@ -2101,26 +2273,26 @@ func (m *Manager) addExpandedItems(pkgID string, links []plugins.ExpandedLink, o
 		}
 	}
 
-	items := make([]*Item, 0, len(links))
+	batch := make([]*Item, 0, len(links))
 	var firstErr error
 	for _, l := range links {
 		itemOpts := opts
 		itemOpts.Filename = l.Name
 		itemOpts.Password = l.Password
 		itemOpts.Size = l.Size
-		it, err := m.addPlainItem(pkgID, l.URL, itemOpts)
+		it, err := m.newItem(pkgID, l.URL, itemOpts)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
-		items = append(items, it)
+		batch = append(batch, it)
 	}
-	if len(items) == 0 {
+	if len(batch) == 0 {
 		return nil, fmt.Errorf("queue: expansion produced no valid items: %w", firstErr)
 	}
-	return items, nil
+	return m.insertItems(batch)
 }
 
 // packageNameFromLinks derives a package name for a newly-expanded
@@ -2137,9 +2309,23 @@ func packageNameFromLinks(links []plugins.ExpandedLink) string {
 }
 
 // addPlainItem is the original single-URL-in/single-item-out insertion
-// logic: build one Item for rawURL and enqueue it. Used directly for the
-// common case, and once per link by addExpandedItems.
+// logic: build one Item for rawURL and enqueue it.
 func (m *Manager) addPlainItem(pkgID, rawURL string, opts AddOptions) (*Item, error) {
+	it, err := m.newItem(pkgID, rawURL, opts)
+	if err != nil {
+		return nil, err
+	}
+	items, err := m.insertItems([]*Item{it})
+	if err != nil {
+		return nil, err
+	}
+	return items[0], nil
+}
+
+// newItem validates rawURL and builds its Item (not yet queued; see
+// insertItems). Hoster matching may hit the network, so it runs here,
+// outside m.mu.
+func (m *Manager) newItem(pkgID, rawURL string, opts AddOptions) (*Item, error) {
 	if err := validHTTPURL(rawURL); err != nil {
 		return nil, err
 	}
@@ -2157,7 +2343,7 @@ func (m *Manager) addPlainItem(pkgID, rawURL string, opts AddOptions) (*Item, er
 	}
 
 	now := time.Now()
-	it := &Item{
+	return &Item{
 		ID:          newID(),
 		PackageID:   pkgID,
 		URL:         rawURL,
@@ -2170,36 +2356,60 @@ func (m *Manager) addPlainItem(pkgID, rawURL string, opts AddOptions) (*Item, er
 		ScheduledAt: opts.ScheduledAt,
 		CreatedAt:   now,
 		UpdatedAt:   now,
-	}
+	}, nil
+}
 
-	// Persisted and snapshotted under the lock: once it is in m.items a
-	// concurrent dispatch can pick it up and mutate it, so neither the
-	// store write nor the published event/return value may read the live
-	// pointer afterwards.
+// insertItems queues items in the given order, persisted in a single
+// transaction: one disk sync for a whole pasted list or container instead
+// of one per link while m.mu is held. Returns snapshots.
+func (m *Manager) insertItems(items []*Item) ([]*Item, error) {
+	// Persisted and snapshotted under the lock: once an item is in
+	// m.items a concurrent dispatch can pick it up and mutate it, so
+	// neither the store write nor the published event/return value may
+	// read the live pointer afterwards.
 	m.mu.Lock()
-	it.Position = m.posSeq
-	if err := m.store.PutItem(it); err != nil {
+	for i, it := range items {
+		it.Position = m.posSeq + int64(i)
+	}
+	if err := m.store.PutItems(items); err != nil {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("queue: persist item: %w", err)
 	}
-	m.posSeq++
-	m.items[it.ID] = it
-	cp := *it
+	m.posSeq += int64(len(items))
+	out := make([]*Item, len(items))
+	for i, it := range items {
+		m.items[it.ID] = it
+		cp := *it
+		out[i] = &cp
+	}
 	m.mu.Unlock()
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+
+	for _, cp := range out {
+		m.publishItem(cp)
+	}
 
 	m.runMu.Lock()
 	runCtx := m.runCtx
 	m.runMu.Unlock()
 	if runCtx != nil {
-		if cp.ScheduledAt != nil && cp.ScheduledAt.After(now) {
-			m.armSchedule(runCtx, *cp.ScheduledAt)
-		} else {
+		now := time.Now()
+		armed := map[time.Time]bool{}
+		wake := false
+		for _, cp := range out {
+			if cp.ScheduledAt != nil && cp.ScheduledAt.After(now) {
+				if !armed[*cp.ScheduledAt] {
+					armed[*cp.ScheduledAt] = true
+					m.armSchedule(runCtx, *cp.ScheduledAt)
+				}
+			} else {
+				wake = true
+			}
+		}
+		if wake {
 			m.wakeAsync()
 		}
 	}
-
-	return &cp, nil
+	return out, nil
 }
 
 // requeue transitions id from any of fromStates into StateQueued.
@@ -2237,22 +2447,28 @@ func (m *Manager) requeueMany(ids []string, fromStates ...State) (int, []error) 
 		}
 		// A manual resume/retry starts a fresh automatic-retry budget and
 		// shouldn't sit out a leftover auto-retry wait.
-		it.Attempts = 0
-		it.RetryAfter = nil
-		it.State = StateQueued
-		it.Error = ""
-		it.UpdatedAt = now
-		if err := m.store.PutItem(it); err != nil {
-			errs = append(errs, fmt.Errorf("queue: persist item: %w", err))
-			continue
-		}
 		cp := *it
+		cp.Attempts = 0
+		cp.RetryAfter = nil
+		cp.State = StateQueued
+		cp.Error = ""
+		cp.UpdatedAt = now
 		updated = append(updated, &cp)
+	}
+	// One transaction for all of them, applied to memory only once it is
+	// written, so a failure changes nothing.
+	if err := m.store.PutItems(updated); err != nil {
+		m.mu.Unlock()
+		return 0, append(errs, fmt.Errorf("queue: persist items: %w", err))
+	}
+	for _, cp := range updated {
+		it := m.items[cp.ID]
+		it.Attempts, it.RetryAfter, it.State, it.Error, it.UpdatedAt = 0, nil, StateQueued, "", now
 	}
 	m.mu.Unlock()
 
 	for _, it := range updated {
-		m.publish(Event{Type: EventItemUpdated, Item: it})
+		m.publishItem(it)
 	}
 	if len(updated) > 0 {
 		m.wakeAsync()
@@ -2298,7 +2514,7 @@ func (m *Manager) Pause(id string) error {
 		}
 		m.activeMu.Unlock()
 	}
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 	return nil
 }
 
@@ -2378,7 +2594,7 @@ func (m *Manager) SetPriority(id string, p Priority) error {
 	cp := *it
 	m.mu.Unlock()
 
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 	m.wakeAsync()
 	return nil
 }
@@ -2389,7 +2605,12 @@ func (m *Manager) SetPriority(id string, p Priority) error {
 // m.packages, the same late-binding pattern matchHoster uses for
 // account changes) — no requeue needed, though an item that's already
 // mid-download keeps writing to wherever it already started.
+//
+// Each segment of path is cleaned like a file name (see
+// sanitizePackagePath), so the folders it creates are valid on every
+// platform; SafeJoin still guards against leaving the download path.
 func (m *Manager) SetPackagePath(id, path string) (*Package, error) {
+	path = sanitizePackagePath(path)
 	m.mu.Lock()
 	pkg, ok := m.packages[id]
 	if !ok {
@@ -2435,6 +2656,12 @@ func (m *Manager) Cancel(id string) error {
 	if discardNow {
 		relPath = m.relPathLocked(it)
 	}
+	// Database first: if that fails the item stays, instead of vanishing
+	// now and coming back with the next start.
+	if err := m.store.DeleteItem(id); err != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("queue: delete item: %w", err)
+	}
 	delete(m.items, id)
 	m.mu.Unlock()
 	m.forgetFinished("item:" + id)
@@ -2443,10 +2670,6 @@ func (m *Manager) Cancel(id string) error {
 		if err := m.engine.DiscardPartial(relPath); err != nil {
 			m.log.Warn("queue: remove partial download", "item_id", id, "error", err)
 		}
-	}
-
-	if err := m.store.DeleteItem(id); err != nil {
-		return fmt.Errorf("queue: delete item: %w", err)
 	}
 	defer m.removePackageIfEmpty(pkgID)
 
@@ -2485,19 +2708,36 @@ func (m *Manager) CancelMany(ids []string) (deleted []string, failed []string) {
 // Reorder assigns sequential Position values to the given items in the
 // order supplied, for drag-to-reorder UIs. IDs not present in the queue
 // are ignored; items not mentioned keep their existing Position.
+//
+// The new positions are written in one transaction, so a failure leaves
+// the old order intact instead of a half-applied one, and each moved
+// item is published so other open Web UIs follow.
 func (m *Manager) Reorder(ids []string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	now := time.Now()
+	var updated []*Item
 	for i, id := range ids {
 		it, ok := m.items[id]
 		if !ok {
 			continue
 		}
-		it.Position = int64(i)
-		it.UpdatedAt = time.Now()
-		if err := m.store.PutItem(it); err != nil {
-			return fmt.Errorf("queue: persist item: %w", err)
-		}
+		cp := *it
+		cp.Position = int64(i)
+		cp.UpdatedAt = now
+		updated = append(updated, &cp)
+	}
+	if err := m.store.PutItems(updated); err != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("queue: persist order: %w", err)
+	}
+	for _, cp := range updated {
+		it := m.items[cp.ID]
+		it.Position, it.UpdatedAt = cp.Position, cp.UpdatedAt
+	}
+	m.mu.Unlock()
+
+	for _, cp := range updated {
+		m.publishItem(cp)
 	}
 	return nil
 }
@@ -2545,7 +2785,9 @@ func (m *Manager) ListPackages() []*Package {
 // Subscribe registers for queue Events. The returned cancel func must be
 // called when the subscriber is done to release its channel.
 func (m *Manager) Subscribe() (<-chan Event, func()) {
-	ch := make(chan Event, 32)
+	// Room for a bulk action on a big queue; a subscriber that still
+	// falls behind is closed (see publish).
+	ch := make(chan Event, 256)
 	m.subMu.Lock()
 	id := m.nextSub
 	m.nextSub++
@@ -2563,14 +2805,36 @@ func (m *Manager) Subscribe() (<-chan Event, func()) {
 	return ch, cancel
 }
 
+// publish hands ev to every subscriber without ever blocking. A
+// subscriber whose buffer is full has fallen behind (a ResumeAll on a
+// big queue easily sends more than it holds): instead of silently losing
+// events it is closed and dropped, so the WebSocket ends and the Web UI
+// reconnects and reloads the whole queue.
 func (m *Manager) publish(ev Event) {
 	m.subMu.Lock()
 	defer m.subMu.Unlock()
-	for _, ch := range m.subs {
+	for id, ch := range m.subs {
 		select {
 		case ch <- ev:
 		default:
+			m.log.Warn("queue: event subscriber fell behind, closing it so it reloads", "subscriber", id)
+			delete(m.subs, id)
+			close(ch)
 		}
+	}
+}
+
+// publishItem publishes an update of it unless it was removed in the
+// meantime. Holding the read lock while publishing orders the event
+// before the item_removed of a concurrent Cancel, which deletes the item
+// under the write lock and publishes after that; without it an update
+// copied just before the removal could arrive after item_removed and
+// bring the item back in the Web UI.
+func (m *Manager) publishItem(it *Item) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.items[it.ID]; ok {
+		m.publish(Event{Type: EventItemUpdated, Item: it})
 	}
 }
 
@@ -2745,8 +3009,15 @@ func (m *Manager) relPathLocked(it *Item) string {
 
 // joinPackageDir returns name (sanitized) inside package pkgID's download
 // directory. Caller holds m.mu.
+//
+// A name ending in ".part" or ".part.json" gets a "_" appended: the
+// downloader keeps an unfinished file X in "X.part" and its resume state
+// in "X.part.json", so such a download would overwrite another one's.
 func (m *Manager) joinPackageDir(pkgID, name string) string {
 	name = pathsafe.SanitizeFilename(name)
+	if lower := strings.ToLower(name); strings.HasSuffix(lower, ".part") || strings.HasSuffix(lower, ".part.json") {
+		name += "_"
+	}
 	pkg, ok := m.packages[pkgID]
 	if !ok {
 		return name

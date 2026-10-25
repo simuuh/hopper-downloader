@@ -8,7 +8,9 @@ package pathsafe
 import (
 	"errors"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -42,18 +44,20 @@ func SafeJoin(base string, elem ...string) (string, error) {
 
 // SanitizeFilename reduces name to a single path element that is safe to
 // create on Linux, macOS and Windows: directory components (either slash
-// convention), NUL and other control characters are removed; characters
+// convention), NUL, C0 and C1 control characters and invisible format
+// characters (bidi overrides such as U+202E that make "exe.txt" display
+// as something else, zero-width characters) are removed; characters
 // Windows forbids in names (<>:"|?*) become "_"; trailing dots/spaces
 // (silently dropped by Windows) are trimmed; reserved device names
-// (CON, NUL, COM1, ...) get a "_" prefix; and the result is capped at
-// maxFilenameBytes, keeping the extension. Falls back to "download" if
+// (CON, NUL, COM1, CONIN$, ...) get a "_" prefix; and the result is capped
+// at maxFilenameBytes, keeping the extension. Falls back to "download" if
 // nothing usable remains.
 func SanitizeFilename(name string) string {
 	name = strings.ReplaceAll(name, "\\", "/")
 	name = filepath.Base(name)
 	name = strings.Map(func(r rune) rune {
 		switch {
-		case r < 0x20 || r == 0x7f:
+		case r < 0x20 || (r >= 0x7f && r <= 0x9f) || unicode.Is(unicode.Cf, r):
 			return -1
 		case strings.ContainsRune(`<>:"|?*`, r):
 			return '_'
@@ -65,11 +69,18 @@ func SanitizeFilename(name string) string {
 	if name == "" || name == "." || name == ".." || name == string(filepath.Separator) {
 		return "download"
 	}
-	stem := strings.ToUpper(strings.SplitN(name, ".", 2)[0])
+	// Windows ignores trailing spaces of the part before the extension
+	// too: "CON .txt" is the console device.
+	stem := strings.ToUpper(strings.TrimRight(strings.SplitN(name, ".", 2)[0], " "))
 	if windowsReserved[stem] {
 		name = "_" + name
 	}
-	return truncateFilename(name, maxFilenameBytes)
+	// Cutting can end the name on a dot or space again.
+	name = strings.TrimRight(truncateFilename(name, maxFilenameBytes), ". ")
+	if name == "" {
+		return "download"
+	}
+	return name
 }
 
 // maxFilenameBytes keeps names under the 255-byte limit of common
@@ -77,9 +88,11 @@ func SanitizeFilename(name string) string {
 const maxFilenameBytes = 240
 
 var windowsReserved = map[string]bool{
-	"CON": true, "PRN": true, "AUX": true, "NUL": true,
-	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
-	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+	"CON": true, "PRN": true, "AUX": true, "NUL": true, "CONIN$": true, "CONOUT$": true,
+	"COM0": true, "COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true, "COM6": true, "COM7": true, "COM8": true, "COM9": true,
+	"COM¹": true, "COM²": true, "COM³": true,
+	"LPT0": true, "LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true, "LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+	"LPT¹": true, "LPT²": true, "LPT³": true,
 }
 
 // truncateFilename shortens name to at most max bytes without splitting a
@@ -98,4 +111,18 @@ func truncateFilename(name string, max int) string {
 		limit--
 	}
 	return stem[:limit] + ext
+}
+
+// Contains reports whether target is dir itself or lies below it, after
+// cleaning both (no symlink resolution). Case-insensitive on Windows.
+func Contains(dir, target string) bool {
+	dir, target = filepath.Clean(dir), filepath.Clean(target)
+	if runtime.GOOS == "windows" {
+		dir, target = strings.ToLower(dir), strings.ToLower(target)
+	}
+	rel, err := filepath.Rel(dir, target)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }

@@ -76,3 +76,19 @@ func TestExtract_StopsOnCancelledContext(t *testing.T) {
 		}
 	}
 }
+
+// Only the end of unrar's output is kept for the error message (N14);
+// its error lines come last.
+func TestTailBuffer_KeepsTheEnd(t *testing.T) {
+	tb := &tailBuffer{max: 8}
+	_, _ = tb.Write([]byte("Extracting 1\nExtracting 2\n"))
+	_, _ = tb.Write([]byte("CRC fail"))
+	if got := tb.String(); got != "…CRC fail" {
+		t.Fatalf("String() = %q, want the last 8 bytes marked as cut", got)
+	}
+	small := &tailBuffer{max: 64}
+	_, _ = small.Write([]byte("short"))
+	if got := small.String(); got != "short" {
+		t.Fatalf("String() = %q, want it unchanged", got)
+	}
+}

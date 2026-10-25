@@ -36,7 +36,9 @@ Authorization: Bearer <still-valid JWT>
 Exchanges a currently-valid token for a fresh one with a full new
 `token_ttl` window, without the password — an already-expired token is
 rejected the same way any other request is, so this can't resurrect a
-dead session, only extend a live one. The Web UI calls this proactively
+dead session, only extend a live one. Refreshing stops (`401`) once the
+original login is more than 30 days old (or `token_ttl`, if longer); and
+changing the admin password invalidates every token issued before. The Web UI calls this proactively
 before a bulk action if the stored token is close to expiring (see
 `web/src/lib/api.ts`'s `tokenNearExpiry`), so a long multi-select
 operation's parallel requests don't legitimately 401 partway through
@@ -127,16 +129,18 @@ itself once that time passes.
 
 ## Live updates: `/ws`
 
-WebSocket, same auth requirement, with one exception: since browsers
-can't set custom headers on the WebSocket handshake, you can pass the
-token as a query parameter instead of a header:
+WebSocket, same auth requirement. Browsers can't set custom headers on
+the WebSocket handshake, so they offer the token as a subprotocol
+instead (the server echoes `hopper.bearer` back):
 
-```
-wss://host/ws?token=<JWT>
+```js
+new WebSocket("wss://host/ws", ["hopper.bearer", token])
 ```
 
-(Prefer the `Authorization` header when your client can set one — the
-query-string form ends up in server/proxy access logs.)
+Other clients can use the `Authorization` header. The old
+`wss://host/ws?token=<JWT>` form still works but is deprecated (hopperd
+logs a warning): the URL, token included, ends up in server and proxy
+access logs.
 
 The server pushes JSON `Event` frames as things change:
 

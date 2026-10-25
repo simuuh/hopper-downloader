@@ -125,3 +125,26 @@ func TestPackageFinished_DeliversInBackground(t *testing.T) {
 		t.Fatal("webhook was not called")
 	}
 }
+
+// A failed delivery names the target's host, never its secret path (N2).
+func TestSend_ErrorDoesNotLeakTargetSecret(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	defer srv.Close()
+
+	n := New(Config{WebhookURL: srv.URL + "/api/webhooks/SECRETID/SECRETTOKEN"}, nil, slog.New(slog.DiscardHandler))
+	err := n.Send(context.Background(), testEvent())
+	if err == nil {
+		t.Fatal("Send succeeded against a server that drops the connection")
+	}
+	if strings.Contains(err.Error(), "SECRET") {
+		t.Fatalf("error leaks the webhook secret: %v", err)
+	}
+	if !strings.Contains(err.Error(), strings.TrimPrefix(srv.URL, "http://")) {
+		t.Fatalf("error %q should still name the target host", err)
+	}
+}

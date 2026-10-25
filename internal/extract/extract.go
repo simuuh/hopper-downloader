@@ -10,7 +10,6 @@ package extract
 import (
 	"archive/tar"
 	"archive/zip"
-	"bytes"
 	"compress/bzip2"
 	"compress/gzip"
 	"context"
@@ -390,9 +389,9 @@ func (e *Extractor) runUnrar(ctx context.Context, srcPath, destDir, password str
 	args = append(args, srcPath, destDir+string(os.PathSeparator))
 
 	cmd := exec.CommandContext(ctx, unrarPath, args...) //nolint:gosec // G204: unrarPath is operator-configured (config.ExtractConfig.UnrarPath), not user input
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	out := &tailBuffer{max: maxUnrarOutput}
+	cmd.Stdout = out
+	cmd.Stderr = out
 	cmd.Stdin = nil // never attached; -p- above is the real guard against a blocking password prompt
 
 	if err := cmd.Run(); err != nil {
@@ -428,6 +427,35 @@ func snapshotFiles(dir string) (map[string]bool, error) {
 		return nil, fmt.Errorf("extract: scan destination directory: %w", err)
 	}
 	return files, nil
+}
+
+// maxUnrarOutput is how much of unrar's output is kept for the error
+// message: it lists every extracted file, so for a big set the full
+// output ran to megabytes, all of it stored in each item's ExtractError
+// and sent over the WebSocket. Its errors come last.
+const maxUnrarOutput = 4 << 10
+
+// tailBuffer keeps the last max bytes written to it.
+type tailBuffer struct {
+	max       int
+	buf       []byte
+	truncated bool
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if over := len(t.buf) - t.max; over > 0 {
+		t.buf = append(t.buf[:0], t.buf[over:]...)
+		t.truncated = true
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string {
+	if t.truncated {
+		return "…" + string(t.buf)
+	}
+	return string(t.buf)
 }
 
 // isWrongPasswordErr heuristically recognizes unrar's wrong-password

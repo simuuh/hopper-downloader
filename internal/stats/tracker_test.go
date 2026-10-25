@@ -177,3 +177,27 @@ func TestToday_EmptyTrackerReturnsZeroValueWithDateSet(t *testing.T) {
 		t.Error("today.ByHoster should be a non-nil empty map, not nil")
 	}
 }
+
+// A damaged all-time record is started over instead of blocking every
+// later update (N19).
+func TestRecordDownload_RecoversFromDamagedRecord(t *testing.T) {
+	db := newTestDB(t)
+	tr := NewTracker(db, nil)
+	if err := db.Update(func(tx *bbolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists(bucketAllTime)
+		if err != nil {
+			return err
+		}
+		return b.Put(allTimeKey, []byte("{not json"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tr.RecordDownload("example", 100, 10)
+	if got := tr.AllTime(); got.FilesTotal != 1 || got.BytesTotal != 100 {
+		t.Fatalf("all-time after a damaged record: files %d bytes %d, want 1 and 100", got.FilesTotal, got.BytesTotal)
+	}
+	if got := tr.Today(); got.FilesTotal != 1 {
+		t.Fatalf("today's files = %d, want 1", got.FilesTotal)
+	}
+}

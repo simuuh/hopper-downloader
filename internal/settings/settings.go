@@ -15,6 +15,8 @@ import (
 	"sync"
 
 	"go.etcd.io/bbolt"
+
+	"github.com/simuuh/hopper-downloader/internal/pathsafe"
 )
 
 var (
@@ -115,8 +117,24 @@ type Manager struct {
 	db    *bbolt.DB
 	hooks Hooks
 
-	mu  sync.RWMutex
-	cur Settings
+	// applyMu serializes Apply; mu guards cur for readers.
+	applyMu sync.Mutex
+	mu      sync.RWMutex
+	cur     Settings
+
+	// protectedDirs (see ProtectDirs) may not become the download path
+	// or lie below it.
+	protectedDirs []string
+}
+
+// ProtectDirs names directories the download path must stay out of —
+// hopperd's database and secrets directory: downloads and extractions
+// write anywhere below the download path and could otherwise replace
+// hopper.db or secrets.json. Call it before the API starts serving.
+func (m *Manager) ProtectDirs(dirs ...string) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	m.protectedDirs = append(m.protectedDirs, dirs...)
 }
 
 // New opens (creating if necessary) the settings bucket and loads any
@@ -190,45 +208,52 @@ func (m *Manager) Get() Settings {
 // rejects the whole Update — nothing is applied or persisted — rather
 // than silently applying the valid subset.
 func (m *Manager) Apply(u Update) (Settings, error) {
-	m.mu.Lock()
+	// One Apply at a time from validation through the hooks, and memory
+	// changes only after the write succeeded: concurrent updates used to
+	// interleave their persist and hook calls (database, memory and the
+	// live components ending up with different values), and a failed
+	// persist left memory changed although the call reported an error.
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	m.mu.RLock()
 	next := m.cur
+	m.mu.RUnlock()
 
 	if u.DownloadPath != nil {
 		path := strings.TrimSpace(*u.DownloadPath)
 		if path == "" {
-			m.mu.Unlock()
 			return Settings{}, fmt.Errorf("download_path must not be empty")
 		}
+		for _, dir := range m.protectedDirs {
+			if pathsafe.Contains(path, dir) {
+				return Settings{}, fmt.Errorf("download_path %q would contain hopperd's own data directory %q; choose a separate folder", path, dir)
+			}
+		}
 		if err := validateDownloadPath(path); err != nil {
-			m.mu.Unlock()
 			return Settings{}, err
 		}
 		next.DownloadPath = path
 	}
 	if u.ParallelFiles != nil {
 		if *u.ParallelFiles < 1 || *u.ParallelFiles > 10 {
-			m.mu.Unlock()
 			return Settings{}, fmt.Errorf("parallel_files must be between 1 and 10, got %d", *u.ParallelFiles)
 		}
 		next.ParallelFiles = *u.ParallelFiles
 	}
 	if u.ParallelChunks != nil {
 		if *u.ParallelChunks < 1 || *u.ParallelChunks > 16 {
-			m.mu.Unlock()
 			return Settings{}, fmt.Errorf("parallel_chunks must be between 1 and 16, got %d", *u.ParallelChunks)
 		}
 		next.ParallelChunks = *u.ParallelChunks
 	}
 	if u.BandwidthLimit != nil {
 		if *u.BandwidthLimit < 0 {
-			m.mu.Unlock()
 			return Settings{}, fmt.Errorf("bandwidth_limit must be >= 0, got %d", *u.BandwidthLimit)
 		}
 		next.BandwidthLimit = *u.BandwidthLimit
 	}
 	if u.RetryMax != nil {
 		if *u.RetryMax < 0 || *u.RetryMax > 10 {
-			m.mu.Unlock()
 			return Settings{}, fmt.Errorf("retry_max must be between 0 and 10, got %d", *u.RetryMax)
 		}
 		next.RetryMax = *u.RetryMax
@@ -240,7 +265,6 @@ func (m *Manager) Apply(u Update) (Settings, error) {
 		switch *u.DefaultPriority {
 		case "low", "normal", "high":
 		default:
-			m.mu.Unlock()
 			return Settings{}, fmt.Errorf("default_priority must be one of low|normal|high, got %q", *u.DefaultPriority)
 		}
 		next.DefaultPriority = *u.DefaultPriority
@@ -249,7 +273,6 @@ func (m *Manager) Apply(u Update) (Settings, error) {
 		switch *u.LogLevel {
 		case "debug", "info", "warn", "error":
 		default:
-			m.mu.Unlock()
 			return Settings{}, fmt.Errorf("log_level must be one of debug|info|warn|error, got %q", *u.LogLevel)
 		}
 		next.LogLevel = *u.LogLevel
@@ -261,12 +284,15 @@ func (m *Manager) Apply(u Update) (Settings, error) {
 		next.ExtractDeleteAfter = *u.ExtractDeleteAfter
 	}
 	if u.ExtractPasswords != nil {
-		next.ExtractPasswords = u.ExtractPasswords
+		pws, err := normalizeExtractPasswords(u.ExtractPasswords)
+		if err != nil {
+			return Settings{}, err
+		}
+		next.ExtractPasswords = pws
 	}
 	if u.AccountPriority != nil {
 		order, err := normalizeAccountPriority(u.AccountPriority)
 		if err != nil {
-			m.mu.Unlock()
 			return Settings{}, err
 		}
 		next.AccountPriority = order
@@ -275,14 +301,40 @@ func (m *Manager) Apply(u Update) (Settings, error) {
 		next.UpdateCheck = *u.UpdateCheck
 	}
 
-	m.cur = next
-	m.mu.Unlock()
-
 	if err := m.persist(next); err != nil {
 		return Settings{}, err
 	}
+	m.mu.Lock()
+	m.cur = next
+	m.mu.Unlock()
 	m.applyHooks(next)
 	return next, nil
+}
+
+// normalizeExtractPasswords validates the archive password list: each is
+// passed to unrar as a command-line argument, where a NUL byte makes
+// every extraction fail (the OS rejects the argument), and the whole list
+// is tried in turn per archive, so it is kept to a sane size. Empty
+// entries are dropped.
+func normalizeExtractPasswords(in []string) ([]string, error) {
+	const maxPasswords, maxLen = 100, 256
+	out := make([]string, 0, len(in))
+	for _, pw := range in {
+		if pw == "" {
+			continue
+		}
+		if strings.ContainsRune(pw, 0) {
+			return nil, fmt.Errorf("extract_passwords: a password contains a NUL character")
+		}
+		if len(pw) > maxLen {
+			return nil, fmt.Errorf("extract_passwords: a password is longer than %d bytes", maxLen)
+		}
+		out = append(out, pw)
+	}
+	if len(out) > maxPasswords {
+		return nil, fmt.Errorf("extract_passwords has %d entries, at most %d allowed", len(out), maxPasswords)
+	}
+	return out, nil
 }
 
 // accountPriorityName matches a plugin name (hoster_key).

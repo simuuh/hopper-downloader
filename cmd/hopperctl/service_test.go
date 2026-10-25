@@ -120,3 +120,23 @@ func TestRemoveServiceConfig_MissingFileIsNotAnError(t *testing.T) {
 		t.Errorf("removeServiceConfig on a config that was never written = %v, want nil", err)
 	}
 }
+
+// A binary path with a space or "%" stays one ExecStart argument (N24).
+func TestSystemdUnit_QuotesExecutable(t *testing.T) {
+	unit := systemdUnit(`/home/Jane Doe/bin/hop%per "x"`)
+	want := `ExecStart="/home/Jane Doe/bin/hop%%per \"x\"" run`
+	if !strings.Contains(unit, want) {
+		t.Fatalf("unit has no %q:\n%s", want, unit)
+	}
+}
+
+// Paths are XML-escaped in the LaunchAgent plist (N24).
+func TestLaunchdPlist_EscapesPaths(t *testing.T) {
+	plist := launchdPlist("/Users/a&b/<bin>/hopperctl", "/Users/a&b/log")
+	if strings.Contains(plist, "a&b") || strings.Contains(plist, "<bin>") {
+		t.Fatalf("unescaped path in plist:\n%s", plist)
+	}
+	if !strings.Contains(plist, "/Users/a&amp;b/&lt;bin&gt;/hopperctl") {
+		t.Fatalf("escaped path missing:\n%s", plist)
+	}
+}

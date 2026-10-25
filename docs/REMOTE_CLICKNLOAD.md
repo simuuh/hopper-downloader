@@ -46,9 +46,12 @@ present), or load `manifest.json` from the zip temporarily via
 `about:debugging` → This Firefox → "Load Temporary Add-on". Firefox
 before 128 can't inject the page script the extension relies on.
 
-Automatic `.dlc` / `.txt` import also needs an API token pasted into the
+Automatic `.dlc` import also needs an API token pasted into the
 options page (there is no login in the extension); see the options page
-for how to get one and why a longer `server.token_ttl` helps.
+for how to get one and why a longer `server.token_ttl` helps. `.txt`
+downloads are only imported when "Also import .txt downloads" is
+switched on: otherwise any text file containing a link — a README, a
+log — would be taken out of your downloads.
 
 The extension intercepts Click'n'Load inside the page before any network
 request is made, which is why it also works in Brave and needs no

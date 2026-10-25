@@ -31,8 +31,8 @@ it opens with the link in the add field, you check it and press Add.
 **Android (Chrome, Edge, Samsung Internet):** open the Web UI and
 "Install app" / "Add to Home screen". Hopper then shows up in the share
 sheet of every app. Installing needs the Web UI served over **HTTPS**
-(e.g. behind your reverse proxy) — browsers don't install apps from plain
-`http://` LAN addresses.
+(behind your reverse proxy, or with `server.tls_cert_file`/`tls_key_file`
+set) — browsers don't install apps from plain `http://` LAN addresses.
 
 **iOS, or without HTTPS:** iOS has no share target for web apps. Create a
 Shortcut (Shortcuts app → new shortcut → "Show in Share Sheet", accepts

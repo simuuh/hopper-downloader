@@ -55,38 +55,68 @@ func (h Hosts) Supports(host string) bool {
 	}
 }
 
+// FailureBackoff is how long a failed host-list refresh is remembered:
+// Match runs for every added link, and with the service's API down each
+// call would otherwise wait out its own request timeout.
+const FailureBackoff = time.Minute
+
 // HostCache caches a plugin's supported-hosts list for TTL. On a failed
 // refresh it keeps serving the previous list (a transient API error
 // shouldn't stop routing links), until Clear drops it — which a plugin
-// does once it knows its token is invalid.
+// does once it knows its token is invalid. A failure is remembered for
+// FailureBackoff (per token, so a new account isn't held back), and only
+// one refresh runs at a time; callers arriving meanwhile wait for it.
 type HostCache struct {
 	TTL   time.Duration
 	Fetch func(token string) (Hosts, error)
 
+	fetchMu sync.Mutex // held for the duration of a refresh
+
 	mu        sync.Mutex
 	hosts     Hosts
 	fetchedAt time.Time
+	failedAt  time.Time
+	failToken string
+	failErr   error
 }
 
 // Snapshot returns the cached hosts, refreshing them first if missing or
-// older than TTL. If the refresh fails it returns the previous (possibly
-// nil) list together with the error.
+// older than TTL. If the refresh fails (now or within FailureBackoff) it
+// returns the previous (possibly nil) list together with the error.
 func (c *HostCache) Snapshot(token string) (Hosts, error) {
-	c.mu.Lock()
-	fresh := c.hosts != nil && time.Since(c.fetchedAt) < c.TTL
-	cached := c.hosts
-	c.mu.Unlock()
-	if fresh {
-		return cached, nil
+	if hosts, err, done := c.cached(token); done {
+		return hosts, err
+	}
+	c.fetchMu.Lock()
+	defer c.fetchMu.Unlock()
+	// Another caller may have refreshed (or failed) while this one waited.
+	if hosts, err, done := c.cached(token); done {
+		return hosts, err
 	}
 	hosts, err := c.Fetch(token)
-	if err != nil {
-		return cached, err
-	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err != nil {
+		c.failedAt, c.failToken, c.failErr = time.Now(), token, err
+		return c.hosts, err
+	}
 	c.hosts, c.fetchedAt = hosts, time.Now()
-	c.mu.Unlock()
+	c.failedAt, c.failToken, c.failErr = time.Time{}, "", nil
 	return hosts, nil
+}
+
+// cached answers from the cache when it is fresh or a refresh for token
+// failed within FailureBackoff; done is false when a refresh is due.
+func (c *HostCache) cached(token string) (hosts Hosts, err error, done bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.hosts != nil && time.Since(c.fetchedAt) < c.TTL {
+		return c.hosts, nil, true
+	}
+	if c.failErr != nil && c.failToken == token && time.Since(c.failedAt) < FailureBackoff {
+		return c.hosts, c.failErr, true
+	}
+	return nil, nil, false
 }
 
 // Domains returns the cached domains (unsorted, possibly empty).
@@ -104,6 +134,7 @@ func (c *HostCache) Domains() []string {
 func (c *HostCache) Clear() {
 	c.mu.Lock()
 	c.hosts, c.fetchedAt = nil, time.Time{}
+	c.failedAt, c.failToken, c.failErr = time.Time{}, "", nil
 	c.mu.Unlock()
 }
 

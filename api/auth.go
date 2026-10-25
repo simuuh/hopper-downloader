@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -23,16 +26,45 @@ var claimsCtxKey claimsCtxKeyType
 // claims is the JWT payload Hopper issues and verifies.
 type claims struct {
 	jwt.RegisteredClaims
+	// AuthTime is when the password was entered (Unix seconds). Refreshes
+	// carry it over, so a session can't be extended past maxSessionAge.
+	AuthTime int64 `json:"auth_time"`
+	// PasswordVersion ties the token to the admin password it was issued
+	// under (see passwordVersion): changing the password revokes every
+	// token issued before.
+	PasswordVersion string `json:"pwv"`
 }
 
-func (s *Server) issueToken() (token string, expiresAt time.Time, err error) {
+// minSessionAge is how long a session lasts at least from its login,
+// however often it is refreshed; a configured server.token_ttl longer
+// than this is the limit instead (see maxSessionAge).
+const minSessionAge = 30 * 24 * time.Hour
+
+func (s *Server) maxSessionAge() time.Duration {
+	return max(minSessionAge, s.cfg.TokenTTL)
+}
+
+// passwordVersion derives a short, non-reversible tag of the current
+// admin password hash, keyed with the JWT secret.
+func (s *Server) passwordVersion() string {
+	mac := hmac.New(sha256.New, []byte(s.cfg.JWTSecret))
+	mac.Write([]byte(s.cfg.AdminPasswordHash))
+	return hex.EncodeToString(mac.Sum(nil)[:8])
+}
+
+// issueToken signs a token for a session that logged in at authTime.
+func (s *Server) issueToken(authTime time.Time) (token string, expiresAt time.Time, err error) {
 	now := time.Now()
 	expiresAt = now.Add(s.cfg.TokenTTL)
-	c := claims{RegisteredClaims: jwt.RegisteredClaims{
-		Subject:   adminSubject,
-		IssuedAt:  jwt.NewNumericDate(now),
-		ExpiresAt: jwt.NewNumericDate(expiresAt),
-	}}
+	c := claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   adminSubject,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+		},
+		AuthTime:        authTime.Unix(),
+		PasswordVersion: s.passwordVersion(),
+	}
 	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString([]byte(s.cfg.JWTSecret))
 	return signed, expiresAt, err
 }
@@ -47,6 +79,11 @@ func (s *Server) verifyToken(raw string) (*claims, error) {
 	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 	if err != nil || !tok.Valid {
 		return nil, fmt.Errorf("invalid token: %w", err)
+	}
+	// Issued under another admin password (or before tokens carried the
+	// version): the password change revoked it.
+	if !hmac.Equal([]byte(c.PasswordVersion), []byte(s.passwordVersion())) {
+		return nil, fmt.Errorf("invalid token: issued for a previous admin password")
 	}
 	return c, nil
 }
@@ -93,7 +130,14 @@ func (s *Server) wsAuth(next http.Handler) http.Handler {
 			raw = subprotocolToken(r.Header.Get("Sec-WebSocket-Protocol"))
 		}
 		if raw == "" {
-			raw = r.URL.Query().Get("token")
+			// Deprecated: a token in the URL ends up in reverse-proxy
+			// access logs. Kept for existing integrations; the Web UI
+			// uses the subprotocol.
+			if raw = r.URL.Query().Get("token"); raw != "" {
+				s.wsQueryTokenWarn.Do(func() {
+					s.log.Warn("api: a client authenticates the WebSocket with ?token= in the URL, which proxies log; this is deprecated, send it as Sec-WebSocket-Protocol: hopper.bearer, <token> instead")
+				})
+			}
 		}
 		if raw == "" {
 			writeError(w, http.StatusUnauthorized, "missing token")
@@ -134,7 +178,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// A dedicated, much stricter per-IP budget than the general API rate
 	// limit: bcrypt makes each guess slow, this caps how many guesses a
 	// single client gets at all.
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if !s.loginLimiters.get(ip).Allow() {
 		s.log.Warn("api: login rate limit exceeded", "remote_ip", ip)
 		writeError(w, http.StatusTooManyRequests, "too many login attempts, try again later")
@@ -155,7 +199,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, expiresAt, err := s.issueToken()
+	token, expiresAt, err := s.issueToken(time.Now())
 	if err != nil {
 		s.log.Error("api: issue token failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to issue token")
@@ -176,8 +220,22 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // tokenNearExpiry — so a long-running multi-select operation doesn't
 // have some of its parallel requests legitimately 401 mid-batch just
 // because the token happened to expire partway through.
+//
+// The new token keeps the session's login time: once maxSessionAge has
+// passed since the password was entered, refreshing stops and the client
+// has to log in again, so a stolen token can't be kept alive forever.
 func (s *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
-	token, expiresAt, err := s.issueToken()
+	c, _ := r.Context().Value(claimsCtxKey).(*claims)
+	if c == nil || c.AuthTime == 0 {
+		writeError(w, http.StatusUnauthorized, "invalid or expired token")
+		return
+	}
+	authTime := time.Unix(c.AuthTime, 0)
+	if time.Since(authTime) > s.maxSessionAge() {
+		writeError(w, http.StatusUnauthorized, "session too old, log in again")
+		return
+	}
+	token, expiresAt, err := s.issueToken(authTime)
 	if err != nil {
 		s.log.Error("api: refresh token failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to issue token")

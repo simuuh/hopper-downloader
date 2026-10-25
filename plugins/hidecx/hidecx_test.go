@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/simuuh/hopper-downloader/plugins"
@@ -649,5 +650,75 @@ func TestSortLinksByPart_FallsBackToNameForNonPartPattern(t *testing.T) {
 	sortLinksByPart(links)
 	if links[0].Name != "alpha.rar" || links[1].Name != "zeta.rar" {
 		t.Errorf("links = %+v, want alphabetical fallback order", links)
+	}
+}
+
+// A link ID from the container response stays one path segment: it can't
+// climb out of /containers/<uuid>/links/ or add a query (N9d).
+func TestResolveLinkURL_EscapesLinkID(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.EscapedPath(), r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(linkResolveResponse{URL: "https://host.example/file"})
+	}))
+	t.Cleanup(srv.Close)
+	p := newTestPlugin(srv, nil)
+
+	if _, err := p.resolveLinkURL(containerHandlerUUID, containerLink{ID: "../../x?y="}); err != nil {
+		t.Fatal(err)
+	}
+	if want := "/containers/" + containerHandlerUUID + "/links/..%2F..%2Fx%3Fy="; gotPath != want || gotQuery != "" {
+		t.Fatalf("request path %q query %q, want path %q and no query", gotPath, gotQuery, want)
+	}
+}
+
+// A container is a stranger's input and the add request waits for its
+// expansion: more than maxContainerLinks links are refused up front, not
+// resolved one request at a time (M11).
+func TestExpand_RefusesOversizedContainer(t *testing.T) {
+	links := make([]containerLink, maxContainerLinks+1)
+	for i := range links {
+		links[i] = containerLink{ID: fmt.Sprintf("l%d", i), Host: "host.example", LinkStatus: "online"}
+	}
+	var resolves atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/containers/"+containerHandlerUUID {
+			_ = json.NewEncoder(w).Encode(containerResponse{AccessStatus: "online", Links: links})
+			return
+		}
+		resolves.Add(1)
+		_ = json.NewEncoder(w).Encode(linkResolveResponse{URL: "https://host.example/file"})
+	}))
+	t.Cleanup(srv.Close)
+
+	p := newTestPlugin(srv, nil)
+	if _, err := p.Expand("https://hide.cx/container/" + containerHandlerUUID); err == nil {
+		t.Fatal("Expand accepted a container over the link limit")
+	}
+	if n := resolves.Load(); n != 0 {
+		t.Fatalf("%d link resolves for a refused container, want 0", n)
+	}
+}
+
+// A link pointing to another hide.cx container is skipped, not followed.
+func TestExpand_SkipsNestedContainers(t *testing.T) {
+	srv := httptest.NewServer(containerHandler(t, containerResponse{
+		AccessStatus: "online",
+		Links: []containerLink{
+			{ID: "a", Host: "host.example", LinkStatus: "online", Name: "example.part1.rar"},
+			{ID: "b", Host: "hide.cx", LinkStatus: "online", Name: "nested"},
+		},
+	}, map[string]string{
+		"a": "https://host.example/file/example.part1.rar",
+		"b": "https://hide.cx/container/" + containerHandlerUUID,
+	}))
+	t.Cleanup(srv.Close)
+
+	links, err := newTestPlugin(srv, nil).Expand("https://hide.cx/container/" + containerHandlerUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 || links[0].URL != "https://host.example/file/example.part1.rar" {
+		t.Fatalf("links = %+v, want only the host.example one", links)
 	}
 }

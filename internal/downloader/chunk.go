@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,6 +22,10 @@ func (e *Engine) downloadChunk(ctx context.Context, f *os.File, req Request, st 
 	for attempt := 0; attempt <= int(e.retryMax.Load()); attempt++ {
 		if attempt > 0 {
 			delay := backoffDelay(e.retryBackoffBase, attempt)
+			var busy *serverBusyError
+			if errors.As(lastErr, &busy) && busy.wait > delay {
+				delay = busy.wait
+			}
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
@@ -93,7 +98,7 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 
 	resp, err := e.client.Do(httpReq)
 	if err != nil {
-		return stalled(fmt.Errorf("request failed: %w", err))
+		return stalled(fmt.Errorf("request failed: %w", redactErr(err)))
 	}
 	defer resp.Body.Close()
 
@@ -104,7 +109,7 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 		return &permanentError{fmt.Errorf("server cannot serve bytes %d- (remote file changed?)", start)}
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+		return statusError(resp)
 	}
 	// 200 to an If-Range request from a server reporting another version:
 	// the remote file was replaced and nothing on disk belongs to it. With
@@ -157,7 +162,11 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 		global := e.globalLimiter.Load()
 		n, readErr := body.Read(buf[:readSize(len(buf), global, hoster)])
 		if n > 0 {
-			watchdog.Reset(e.stallTimeout)
+			// Waiting for the bandwidth limiter is our own doing, not a
+			// silent server: the watchdog is paused for it and restarted
+			// once the bytes may be written. Otherwise a low limit (or
+			// many chunks sharing it) aborted healthy transfers as stalled.
+			watchdog.Stop()
 			if global != nil {
 				if werr := global.WaitN(ctx, n); werr != nil {
 					return werr
@@ -168,8 +177,11 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 					return werr
 				}
 			}
+			watchdog.Reset(e.stallTimeout)
+			// A local write error (disk full, permissions, a vanished
+			// mount) won't go away by fetching the same bytes again.
 			if _, werr := f.WriteAt(buf[:n], offset); werr != nil {
-				return fmt.Errorf("write: %w", werr)
+				return &permanentError{fmt.Errorf("write: %w", werr)}
 			}
 			offset += int64(n)
 			st.addProgress(idx, int64(n))
@@ -195,6 +207,67 @@ func (e *Engine) fetchChunkOnce(ctx context.Context, f *os.File, req Request, st
 }
 
 const maxBackoff = 60 * time.Second
+
+// maxRetryAfterWait caps how long a server's Retry-After may delay the
+// next attempt within one download; longer waits are the queue's job
+// (its automatic retry fetches a fresh link anyway).
+const maxRetryAfterWait = 5 * time.Minute
+
+// serverBusyError is a 429 or 503, retried after the server's
+// Retry-After when it sends one (wait, capped at maxRetryAfterWait).
+type serverBusyError struct {
+	status int
+	wait   time.Duration
+}
+
+func (e *serverBusyError) Error() string {
+	if e.wait > 0 {
+		return fmt.Sprintf("unexpected status %d (retry after %s)", e.status, e.wait)
+	}
+	return fmt.Sprintf("unexpected status %d", e.status)
+}
+
+// statusError classifies a response that is neither 200 nor 206. Client
+// errors (403 forbidden, 404, 410 gone, ...) are permanent for this URL:
+// asking again with the same link gets the same answer, so they skip the
+// in-download retries — the queue's automatic retry still resolves a
+// fresh link. 408 and 429 and every 5xx are worth retrying.
+func statusError(resp *http.Response) error {
+	code := resp.StatusCode
+	switch {
+	case code == http.StatusTooManyRequests || code == http.StatusServiceUnavailable:
+		return &serverBusyError{status: code, wait: retryAfter(resp.Header.Get("Retry-After"), time.Now())}
+	case code >= 400 && code < 500 && code != http.StatusRequestTimeout:
+		return &permanentError{fmt.Errorf("unexpected status %d", code)}
+	default:
+		return fmt.Errorf("unexpected status %d", code)
+	}
+}
+
+// retryAfter parses a Retry-After header (seconds or an HTTP date) into
+// a wait from now, capped at maxRetryAfterWait; 0 if absent or invalid.
+func retryAfter(v string, now time.Time) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	var d time.Duration
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		if secs >= int64(maxRetryAfterWait/time.Second) {
+			return maxRetryAfterWait
+		}
+		d = time.Duration(secs) * time.Second
+	} else if at, err := http.ParseTime(v); err == nil {
+		d = at.Sub(now)
+	}
+	if d <= 0 {
+		return 0
+	}
+	return min(d, maxRetryAfterWait)
+}
 
 func backoffDelay(base time.Duration, attempt int) time.Duration {
 	d := float64(base) * math.Pow(2, float64(attempt-1))

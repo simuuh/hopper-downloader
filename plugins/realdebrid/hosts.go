@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/simuuh/hopper-downloader/plugins/internal/multihost"
 )
 
 // hostsSnapshot returns the current supported-hosts map, refreshing it
@@ -16,25 +18,46 @@ import (
 // previous (possibly stale, possibly nil) cache alongside the error, so
 // Match can degrade gracefully instead of refusing every URL until the
 // next successful refresh.
+//
+// Like multihost.HostCache, a failed refresh is remembered for
+// multihost.FailureBackoff per token, and only one refresh runs at a time:
+// Match runs for every added link, and with the API down each call used
+// to wait out its own request timeout.
 func (p *Plugin) hostsSnapshot(token string) (map[string]hostStatus, error) {
-	p.mu.Lock()
-	fresh := p.hosts != nil && time.Since(p.hostsFetchedAt) < hostsCacheTTL
-	cached := p.hosts
-	p.mu.Unlock()
-	if fresh {
-		return cached, nil
+	if hosts, err, done := p.cachedHosts(token); done {
+		return hosts, err
+	}
+	p.hostsFetchMu.Lock()
+	defer p.hostsFetchMu.Unlock()
+	if hosts, err, done := p.cachedHosts(token); done {
+		return hosts, err
 	}
 
 	fetched, err := p.fetchHostsStatus(token)
-	if err != nil {
-		return cached, err
-	}
-
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err != nil {
+		p.hostsFailedAt, p.hostsFailToken, p.hostsFailErr = time.Now(), token, err
+		return p.hosts, err
+	}
 	p.hosts = fetched
 	p.hostsFetchedAt = time.Now()
-	p.mu.Unlock()
+	p.hostsFailedAt, p.hostsFailToken, p.hostsFailErr = time.Time{}, "", nil
 	return fetched, nil
+}
+
+// cachedHosts answers from the cache when it is fresh or a refresh for
+// token failed within multihost.FailureBackoff.
+func (p *Plugin) cachedHosts(token string) (hosts map[string]hostStatus, err error, done bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.hosts != nil && time.Since(p.hostsFetchedAt) < hostsCacheTTL {
+		return p.hosts, nil, true
+	}
+	if p.hostsFailErr != nil && p.hostsFailToken == token && time.Since(p.hostsFailedAt) < multihost.FailureBackoff {
+		return p.hosts, p.hostsFailErr, true
+	}
+	return nil, nil, false
 }
 
 // WarmHostsCache eagerly refreshes the /hosts/status cache using token,
@@ -80,6 +103,7 @@ func (p *Plugin) ClearHostsCache() {
 	p.mu.Lock()
 	p.hosts = nil
 	p.hostsFetchedAt = time.Time{}
+	p.hostsFailedAt, p.hostsFailToken, p.hostsFailErr = time.Time{}, "", nil
 	p.mu.Unlock()
 }
 

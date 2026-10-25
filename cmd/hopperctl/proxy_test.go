@@ -398,3 +398,45 @@ func TestRunProxy_ServesHTTPS(t *testing.T) {
 		t.Fatal("runProxy did not shut down within 2s of context cancellation")
 	}
 }
+
+// A client that connects and stays silent doesn't hold up the next
+// connection while its first byte is awaited (N9c).
+func TestDualProtocolListener_IdleConnectionDoesNotBlock(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dl := &dualProtocolListener{Listener: ln, tlsConfig: &tls.Config{}} //nolint:gosec // G402: never handshakes in this test
+	defer func() { _ = dl.Close() }()
+
+	idle, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = idle.Close() }()
+	active, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = active.Close() }()
+	if _, err := active.Write([]byte("GET / HTTP/1.1\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	got := make(chan error, 1)
+	go func() {
+		c, err := dl.Accept()
+		if err == nil {
+			_ = c.Close()
+		}
+		got <- err
+	}()
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Accept waited for the idle connection instead of returning the active one")
+	}
+}

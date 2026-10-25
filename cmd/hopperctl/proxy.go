@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -180,36 +181,74 @@ const tlsRecordTypeHandshake = 0x16
 type dualProtocolListener struct {
 	net.Listener
 	tlsConfig *tls.Config
+
+	once  sync.Once
+	ready chan net.Conn // sniffed connections, ready for the server
+	errc  chan error    // the underlying Accept's terminal error
+	done  chan struct{} // closed by Close
+	close sync.Once
 }
 
-// Accept swallows a per-connection peek failure (idle/dead connection,
-// peek timeout) by closing that connection and trying the next one,
-// rather than returning the error to the caller — http.Server.Serve
-// treats any error Accept returns as fatal to the whole listener, so
-// propagating a single bad connection's error here would take down the
-// entire proxy. A real Listener-level failure (e.g. the listener was
-// closed for shutdown) still returns immediately, unchanged.
+// Accept returns the next connection whose first byte has been seen.
+// The sniffing happens in a goroutine per connection (see serve): done
+// inline, one client that connects and sends nothing held up every other
+// connection for up to sniffPeekTimeout. A failed sniff (idle or dead
+// connection) just closes that connection — http.Server.Serve treats any
+// error Accept returns as fatal to the whole listener. A real
+// listener-level failure (closed for shutdown) is returned as before.
 func (l *dualProtocolListener) Accept() (net.Conn, error) {
+	l.once.Do(l.start)
+	select {
+	case c := <-l.ready:
+		return c, nil
+	case err := <-l.errc:
+		l.errc <- err // every later Accept reports it too
+		return nil, err
+	}
+}
+
+// Close stops the sniffing goroutines and closes the listener.
+func (l *dualProtocolListener) Close() error {
+	l.once.Do(l.start)
+	l.close.Do(func() { close(l.done) })
+	return l.Listener.Close()
+}
+
+func (l *dualProtocolListener) start() {
+	l.ready = make(chan net.Conn)
+	l.errc = make(chan error, 1)
+	l.done = make(chan struct{})
+	go l.serve()
+}
+
+func (l *dualProtocolListener) serve() {
 	for {
 		conn, err := l.Listener.Accept()
 		if err != nil {
-			return nil, err
+			l.errc <- err
+			return
 		}
+		go l.sniff(conn)
+	}
+}
 
-		_ = conn.SetReadDeadline(time.Now().Add(sniffPeekTimeout))
-		br := bufio.NewReader(conn)
-		first, err := br.Peek(1)
-		_ = conn.SetReadDeadline(time.Time{})
-		if err != nil {
-			_ = conn.Close()
-			continue
-		}
-
-		pc := &peekedConn{Conn: conn, r: br}
-		if first[0] == tlsRecordTypeHandshake {
-			return tls.Server(pc, l.tlsConfig), nil
-		}
-		return pc, nil
+func (l *dualProtocolListener) sniff(conn net.Conn) {
+	_ = conn.SetReadDeadline(time.Now().Add(sniffPeekTimeout))
+	br := bufio.NewReader(conn)
+	first, err := br.Peek(1)
+	_ = conn.SetReadDeadline(time.Time{})
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	var out net.Conn = &peekedConn{Conn: conn, r: br}
+	if first[0] == tlsRecordTypeHandshake {
+		out = tls.Server(out, l.tlsConfig)
+	}
+	select {
+	case l.ready <- out:
+	case <-l.done:
+		_ = conn.Close()
 	}
 }
 

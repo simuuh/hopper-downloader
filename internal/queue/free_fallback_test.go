@@ -236,3 +236,23 @@ func TestSolveCaptcha_NoPendingCaptchaReturnsError(t *testing.T) {
 		t.Errorf("SolveCaptcha err = %v, want ErrNoCaptchaPending", err)
 	}
 }
+
+// A captcha image URL that isn't https is never shown in the Web UI,
+// where the viewer's browser would fetch it (N23).
+func TestRun_FreeFallback_RejectsNonHTTPSCaptchaImage(t *testing.T) {
+	srv := staticFileServer(t, []byte("hello"))
+	h := &freeFallbackHoster{name: "onefichier", freeResults: []freeResult{{err: plugins.ErrCaptchaRequired{ImageURL: "http://192.168.1.1/captcha.png"}}}}
+	accounts := &fakeAccountLookup{}
+	accounts.SetAccount("onefichier")
+	mgr := newResolveTestManager(t, plugins.NewRegistry(h), accounts)
+
+	it, err := mgr.AddLink(srv.URL+"/file.txt", AddOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.dispatch(context.Background())
+	got := waitForCondition(t, mgr, it.ID, 3*time.Second, func(it *Item) bool { return it.State == StateError })
+	if got.CaptchaURL != "" {
+		t.Fatalf("CaptchaURL = %q, want none", got.CaptchaURL)
+	}
+}

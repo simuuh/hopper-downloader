@@ -27,6 +27,10 @@ func cmdHashPassword(args []string) error {
 	if pw == "" {
 		return fmt.Errorf("no password provided on stdin (usage: printf '%%s' 'pw' | hopperctl hash-password)")
 	}
+	// Same minimum as hopperd -set-admin-password.
+	if len(pw) < 8 {
+		return fmt.Errorf("password must be at least 8 characters")
+	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
 	if err != nil {

@@ -74,9 +74,15 @@ type Plugin struct {
 	baseURL        string
 	retryBaseDelay time.Duration
 
+	// hostsFetchMu lets one /hosts/status refresh run at a time; the
+	// rest of the cache is guarded by mu (see hostsSnapshot).
+	hostsFetchMu   sync.Mutex
 	mu             sync.Mutex
 	hosts          map[string]hostStatus
 	hostsFetchedAt time.Time
+	hostsFailedAt  time.Time
+	hostsFailToken string
+	hostsFailErr   error
 }
 
 // New returns a Real-Debrid Plugin. tokens is typically the same

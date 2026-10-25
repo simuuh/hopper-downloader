@@ -7,6 +7,7 @@ import (
 	"crypto/cipher"
 	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -109,7 +110,12 @@ func fetchContainerKey(ctx context.Context, client *http.Client, apiURL, dlcKey 
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("dlc: key service request failed: %w", err)
+		// net/http's error repeats the URL, container key included.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return nil, fmt.Errorf("dlc: key service request to %s failed: %w", req.URL.Host, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

@@ -3,7 +3,9 @@ package api
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -131,7 +133,7 @@ func (s *ipLimiterStore) get(ip string) *rate.Limiter {
 
 func (s *Server) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.limiters.get(clientIP(r)).Allow() {
+		if !s.limiters.get(s.clientIP(r)).Allow() {
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		}
@@ -139,10 +141,43 @@ func (s *Server) rateLimit(next http.Handler) http.Handler {
 	})
 }
 
-func clientIP(r *http.Request) string {
+// clientIP is the address rate limits and login logs go by. Behind a
+// reverse proxy every request comes from the proxy, so all clients would
+// share one bucket and a single attacker could lock everyone out of the
+// login. When the connection comes from a trusted proxy, the rightmost
+// X-Forwarded-For entry that isn't itself a trusted proxy is the client:
+// entries further left were written by the client and prove nothing.
+func (s *Server) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	if !s.isTrustedProxy(host) {
+		return host
+	}
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := strings.TrimSpace(hops[i])
+		if _, err := netip.ParseAddr(hop); err != nil {
+			break
+		}
+		if !s.isTrustedProxy(hop) {
+			return hop
+		}
 	}
 	return host
+}
+
+func (s *Server) isTrustedProxy(ip string) bool {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, p := range s.trustedProxies {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }

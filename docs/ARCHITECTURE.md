@@ -283,9 +283,9 @@ AllDebrid's "delayed" links are polled every 5 s for up to 2 min.
 | Plugin | Verified | Unverified |
 | --- | --- | --- |
 | realdebrid | endpoints, auth, `/hosts/status`, free-account `/user` shape | error code 9 = traffic exhausted |
-| rapidgator | v2 API paths/params (community clients), "Session doesn't exist" wording | `premium_end_time` type, free-tier `/file/download` POST shape |
-| onefichier | base URL, auth header, `file/info`, `download/get_token`, `user/info` | premium-expiry field name, free-tier `delay` |
-| katfile | full API incl. two-key auth, error envelope (errors use HTTP 200), date format | — |
+| rapidgator | — (v2 API paths/params agree across several community clients, not checked against the live API) | everything, notably `premium_end_time` type, free-tier `/file/download` POST shape, "Session doesn't exist" wording |
+| onefichier | base URL, auth header, `file/info`, `download/get_token` | `user/info` response (premium-expiry field name), free-tier `delay` |
+| katfile | full API incl. two-key auth, error envelope (errors use HTTP 200), date format | free-download flow end to end (not implemented) |
 | ddownload | full API endpoint list; no download endpoint exists | `status: 451` meaning |
 | hidecx | container + link JSON API, required headers | other `access_status` values |
 | alldebrid | docs; live: public `/v4/hosts`, error envelope | success bodies of `user/hosts`, `link/infos`, `link/unlock`, `link/delayed`, `user` |
@@ -321,6 +321,9 @@ mounts). The outcome is set on every item of the group. When it does
 *not* extract, it logs why: auto-extract off, parts paused or failed
 (they won't finish on their own), or the first part missing from the
 package; parts merely still downloading are logged at debug level.
+Archives are extracted next to their parts, into the package folder; an
+archive without a package gets a folder of its own named after it, so
+its files can't overwrite other downloads in the downloads root.
 As soon as one part is downloaded, the group's items become
 `extract_pending`: a downloaded archive only counts as finished once it
 is extracted, so "Clear done" and the Finished view leave it alone.
@@ -333,8 +336,11 @@ queue (`Cancel` returns `ErrExtractInProgress`): unrar would keep running
 and its result, and the delete-after cleanup, would be lost. One that is
 still queued can be removed; right before extracting, `beginExtraction`
 checks under the queue lock that every part is still there and skips the
-group otherwise. Extractions interrupted by a restart, running or
-queued, become `extract_failed`.
+group otherwise. An extraction cut off by a shutdown is not recorded as
+failed (no notification either): it stays `extracting`, and on the next
+start `resumeInterruptedExtractions` extracts every interrupted group,
+running or queued, again — or, with auto-extract off, marks it
+`extract_failed` with a pointer to the re-extract button.
 
 `POST /queue/{id}/extract` (`RetryExtraction`) extracts on request: a
 finished archive that was never extracted (auto-extract was off when it
@@ -411,13 +417,18 @@ A valid re-check, a credential update or re-enabling ends the cooldown.
 ## API, auth and Web UI
 
 - JWT (HS256 only) from a bcrypt admin password; `server.token_ttl`
-  (24 h) is the only expiry. `POST /auth/refresh` extends a *valid*
-  token. Login has its own per-IP budget (5, then 10/min); failed
-  attempts are logged with the client IP (fail2ban-friendly).
+  (24 h) is the expiry. `POST /auth/refresh` extends a *valid* token but
+  keeps its login time (`auth_time`): after 30 days (or `token_ttl`, if
+  longer) the session ends. Tokens carry `pwv`, an HMAC of the password
+  hash, so a password change revokes them. Login has its own per-IP
+  budget (5, then 10/min); failed attempts are logged with the client IP
+  (fail2ban-friendly). Behind a reverse proxy, `server.trusted_proxies`
+  makes both go by the client in `X-Forwarded-For` (rightmost entry that
+  isn't a trusted proxy) instead of the proxy's address.
 - The WebSocket authenticates via `Sec-WebSocket-Protocol: hopper.bearer,
   <jwt>` (not the URL, which ends up in proxy logs; `?token=` remains a
-  fallback), closes when the token expires and accepts at most 4 KiB
-  frames.
+  deprecated fallback that logs a warning), closes when the token
+  expires and accepts at most 4 KiB frames.
 - Per-IP rate-limiter entries are evicted after 10 idle minutes.
 - Bulk cancel is one request (`DELETE /queue`), so clearing many items
   can't trip the per-client rate limiter.

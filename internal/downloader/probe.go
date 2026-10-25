@@ -57,7 +57,7 @@ func probeHead(ctx context.Context, client *http.Client, url string) (remoteFile
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return remoteFile{}, err
+		return remoteFile{}, redactErr(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -78,7 +78,7 @@ func probeRangedGet(ctx context.Context, client *http.Client, url string) (remot
 	req.Header.Set("Range", "bytes=0-0")
 	resp, err := client.Do(req)
 	if err != nil {
-		return remoteFile{}, err
+		return remoteFile{}, redactErr(err)
 	}
 	defer resp.Body.Close()
 

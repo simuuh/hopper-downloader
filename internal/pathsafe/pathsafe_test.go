@@ -90,3 +90,48 @@ func TestSanitizeFilename_TruncatesLongNamesKeepingExtension(t *testing.T) {
 		t.Fatalf("got %q, want valid UTF-8 ending in .rar", got)
 	}
 }
+
+func TestContains(t *testing.T) {
+	sep := string(filepath.Separator)
+	base := filepath.Join(sep+"data", "hopper")
+	cases := []struct {
+		dir, target string
+		want        bool
+	}{
+		{base, base, true},
+		{base, filepath.Join(base, "sub"), true},
+		{base, filepath.Join(base, "..", "hopper", "x"), true},
+		{base, filepath.Join(sep+"data", "hopper-other"), false},
+		{base, filepath.Join(sep + "data"), false},
+		{filepath.Join(sep + "data"), base, true},
+	}
+	for _, c := range cases {
+		if got := Contains(c.dir, c.target); got != c.want {
+			t.Errorf("Contains(%q, %q) = %v, want %v", c.dir, c.target, got, c.want)
+		}
+	}
+}
+
+// Invisible and control characters, every reserved device name and a cut
+// ending on a dot are handled (N4).
+func TestSanitizeFilename_Hardening(t *testing.T) {
+	cases := map[string]string{
+		"invoice\u202Etxt.exe": "invoicetxt.exe",
+		"zero\u200Bwidth.bin":  "zerowidth.bin",
+		"c1\u0085ctrl.bin":     "c1ctrl.bin",
+		"COM0.txt":             "_COM0.txt",
+		"lpt\u00B9":            "_lpt\u00B9",
+		"CONIN$":               "_CONIN$",
+		"con .txt":             "_con .txt",
+		"plain name.part1.rar": "plain name.part1.rar",
+	}
+	for in, want := range cases {
+		if got := SanitizeFilename(in); got != want {
+			t.Errorf("SanitizeFilename(%q) = %q, want %q", in, got, want)
+		}
+	}
+	long := strings.Repeat("a", maxFilenameBytes-1) + ". .x"
+	if got := SanitizeFilename(long); strings.HasSuffix(got, ".") || strings.HasSuffix(got, " ") {
+		t.Errorf("truncated name %q ends on a dot or space", got)
+	}
+}

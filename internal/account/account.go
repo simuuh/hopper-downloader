@@ -168,48 +168,56 @@ func (m *Manager) Add(hosterKey, username, password string, extra map[string]str
 	}
 
 	m.mu.Lock()
-	m.accounts[id] = r
-	m.mu.Unlock()
-
+	defer m.mu.Unlock()
 	if err := m.persist(r); err != nil {
 		return nil, err
 	}
+	m.accounts[id] = r
 	pub := r.Account
 	return &pub, nil
 }
 
 // SetEnabled toggles whether an account is eligible for AccountFor.
+//
+// Like every write here it persists while holding m.mu and only then
+// updates memory: persisting after unlocking let a concurrent
+// UpdateCredentials be overwritten with the old ciphertext, or write back
+// an account a concurrent Delete had just removed.
 func (m *Manager) SetEnabled(id string, enabled bool) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	r, ok := m.accounts[id]
 	if !ok {
-		m.mu.Unlock()
 		return ErrNotFound
 	}
-	r.Enabled = enabled
-	r.UpdatedAt = time.Now()
+	updated := *r
+	updated.Enabled = enabled
+	updated.UpdatedAt = time.Now()
+	if err := m.persist(&updated); err != nil {
+		return err
+	}
+	m.accounts[id] = &updated
 	if enabled {
 		delete(m.cooldown, id)
 	}
-	cp := *r
-	m.mu.Unlock()
-	return m.persist(&cp)
+	return nil
 }
 
 // Delete removes an account permanently.
 func (m *Manager) Delete(id string) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if _, ok := m.accounts[id]; !ok {
-		m.mu.Unlock()
 		return ErrNotFound
+	}
+	if err := m.db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket(bucketName).Delete([]byte(id))
+	}); err != nil {
+		return fmt.Errorf("account: delete record: %w", err)
 	}
 	delete(m.accounts, id)
 	delete(m.cooldown, id)
-	m.mu.Unlock()
-
-	return m.db.Update(func(tx *bbolt.Tx) error {
-		return tx.Bucket(bucketName).Delete([]byte(id))
-	})
+	return nil
 }
 
 // List returns the public (non-secret) view of every stored account.
@@ -386,34 +394,33 @@ func (m *Manager) decrypt(r *record) (*plugins.Account, error) {
 // validation was ever attempted.
 func (m *Manager) SetValidation(id string, info *plugins.AccountInfo) (*Account, error) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	r, ok := m.accounts[id]
 	if !ok {
-		m.mu.Unlock()
 		return nil, ErrNotFound
 	}
+	cp := *r
 	now := time.Now()
-	r.ValidatedAt = &now
-	r.UpdatedAt = now
+	cp.ValidatedAt = &now
+	cp.UpdatedAt = now
 	if info != nil {
 		valid := info.Valid
-		r.Valid = &valid
-		if valid {
-			delete(m.cooldown, id)
-		}
-		r.ExpiresAt = info.ExpiresAt
-		r.TrafficLeft = info.TrafficLeft
-		r.Label = info.Label
+		cp.Valid = &valid
+		cp.ExpiresAt = info.ExpiresAt
+		cp.TrafficLeft = info.TrafficLeft
+		cp.Label = info.Label
 	} else {
-		r.Valid = nil
-		r.ExpiresAt = nil
-		r.TrafficLeft = nil
-		r.Label = ""
+		cp.Valid = nil
+		cp.ExpiresAt = nil
+		cp.TrafficLeft = nil
+		cp.Label = ""
 	}
-	cp := *r
-	m.mu.Unlock()
-
 	if err := m.persist(&cp); err != nil {
 		return nil, err
+	}
+	m.accounts[id] = &cp
+	if cp.Valid != nil && *cp.Valid {
+		delete(m.cooldown, id)
 	}
 	pub := cp.Account
 	return &pub, nil

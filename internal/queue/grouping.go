@@ -149,6 +149,7 @@ func (m *Manager) AddLinks(links []LinkInput, name string, opts AddOptions) (*Ad
 		}
 
 		existing := m.filenamesInPackage(pkgID)
+		var batch []*Item
 		for _, e := range g.entries {
 			if pkgID != "" && e.Filename != "" && existing[strings.ToLower(e.Filename)] {
 				res.Duplicates = append(res.Duplicates, e.URL)
@@ -161,7 +162,7 @@ func (m *Manager) AddLinks(links []LinkInput, name string, opts AddOptions) (*Ad
 			if e.Password != "" {
 				itemOpts.Password = e.Password
 			}
-			it, err := m.addPlainItem(pkgID, e.URL, itemOpts)
+			it, err := m.newItem(pkgID, e.URL, itemOpts)
 			if err != nil {
 				if firstErr == nil {
 					firstErr = err
@@ -171,11 +172,22 @@ func (m *Manager) AddLinks(links []LinkInput, name string, opts AddOptions) (*Ad
 			if e.Filename != "" {
 				existing[strings.ToLower(e.Filename)] = true
 			}
-			res.Items = append(res.Items, it)
-			if pkgID != "" && !pkgSeen[pkgID] {
-				pkgSeen[pkgID] = true
-				if p := m.packageSnapshot(pkgID); p != nil {
-					res.Packages = append(res.Packages, p)
+			batch = append(batch, it)
+		}
+		// One transaction per group instead of one per link.
+		if len(batch) > 0 {
+			added, err := m.insertItems(batch)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+			} else {
+				res.Items = append(res.Items, added...)
+				if pkgID != "" && !pkgSeen[pkgID] {
+					pkgSeen[pkgID] = true
+					if p := m.packageSnapshot(pkgID); p != nil {
+						res.Packages = append(res.Packages, p)
+					}
 				}
 			}
 		}
@@ -208,7 +220,7 @@ func (m *Manager) expandLinks(links []LinkInput) []LinkInput {
 		if hoster, ok := m.matchHoster(l.URL); ok {
 			if exp, ok := hoster.(plugins.Expander); ok {
 				if expanded, err := exp.Expand(l.URL); err == nil && len(expanded) > 0 {
-					for _, x := range expanded {
+					for _, x := range m.externalLinksOnly(l.URL, expanded) {
 						pw := x.Password
 						if pw == "" {
 							pw = l.Password

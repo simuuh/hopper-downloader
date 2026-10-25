@@ -93,7 +93,7 @@ func (m *Manager) EditItem(id string, e ItemEdit) (*Item, error) {
 	cp := *it
 	m.mu.Unlock()
 
-	m.publish(Event{Type: EventItemUpdated, Item: &cp})
+	m.publishItem(&cp)
 	m.wakeAsync()
 	return &cp, nil
 }

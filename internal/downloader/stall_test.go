@@ -59,3 +59,33 @@ func TestDownload_StalledTransferIsRetriedNotHungForever(t *testing.T) {
 		t.Fatal("content mismatch after stall + resume")
 	}
 }
+
+// Time spent waiting for the bandwidth limiter is not a stall: a
+// download throttled well below what the server delivers finishes
+// without a single retry (M18).
+func TestDownload_LimiterWaitIsNotAStall(t *testing.T) {
+	// Far more than socket buffers hold, at a limit that makes every read
+	// wait longer than the stall timeout: about three seconds in total.
+	payload := testPayload(8 << 20)
+	var gets atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+		if r.Method == http.MethodHead {
+			w.Header().Set("Accept-Ranges", "bytes")
+			return
+		}
+		gets.Add(1)
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(srv.Close)
+
+	e := New(Config{BaseDir: t.TempDir(), RetryMax: 0, StallTimeout: 300 * time.Millisecond, GlobalBandwidthLimit: 2 << 20})
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := e.Download(ctx, Request{URL: srv.URL, RelPath: "f.bin", ParallelChunks: 1}); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if n := gets.Load(); n != 1 {
+		t.Fatalf("%d GET requests, want 1 (no stall retries)", n)
+	}
+}

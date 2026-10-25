@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // session is hopperctl's local, persisted login state: which hopperd
@@ -18,6 +19,11 @@ type session struct {
 	Server string `json:"server"`
 	Token  string `json:"token"`
 }
+
+// apiTimeout bounds every request to hopperd's API. http.DefaultClient
+// has none, so an unreachable or hanging server left hopperctl waiting
+// forever.
+const apiTimeout = 60 * time.Second
 
 func sessionPath() (string, error) {
 	dir, err := os.UserConfigDir()
@@ -98,7 +104,7 @@ func apiRequestUnauthenticated(method, url string, body any, out any) error {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Timeout: apiTimeout}).Do(req)
 	if err != nil {
 		return fmt.Errorf("request to %s failed: %w", url, err)
 	}
@@ -146,7 +152,7 @@ func apiRequest(method, path string, body any, out any) error {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Timeout: apiTimeout}).Do(req)
 	if err != nil {
 		return fmt.Errorf("request to %s failed: %w", sess.Server, err)
 	}

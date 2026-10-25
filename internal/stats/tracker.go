@@ -63,16 +63,11 @@ func (t *Tracker) RecordDownload(hosterKey string, bytes int64, speed int64) {
 	t.session.ByHoster[hosterKey] += bytes
 	t.mu.Unlock()
 
-	date := time.Now().Format(dateLayout)
-	if err := t.updateDaily(date, func(d *DailyStats) {
+	if err := t.update(time.Now().Format(dateLayout), func(d *DailyStats) {
 		d.BytesTotal += bytes
 		d.FilesTotal++
 		d.ByHoster[hosterKey] += bytes
-	}); err != nil {
-		t.logError("persist daily stats", err)
-	}
-
-	if err := t.updateAllTime(func(a *AllTimeStats) {
+	}, func(a *AllTimeStats) {
 		a.BytesTotal += bytes
 		a.FilesTotal++
 		if speed > a.PeakSpeed {
@@ -83,7 +78,7 @@ func (t *Tracker) RecordDownload(hosterKey string, bytes int64, speed int64) {
 		}
 		a.ByHoster[hosterKey] += bytes
 	}); err != nil {
-		t.logError("persist all-time stats", err)
+		t.logError("persist stats", err)
 	}
 }
 
@@ -95,17 +90,11 @@ func (t *Tracker) RecordError(hosterKey string) {
 	t.session.Errors++
 	t.mu.Unlock()
 
-	date := time.Now().Format(dateLayout)
-	if err := t.updateDaily(date, func(d *DailyStats) {
-		d.Errors++
-	}); err != nil {
-		t.logError("persist daily error stats", err)
-	}
-
-	if err := t.updateAllTime(func(a *AllTimeStats) {
-		a.Errors++
-	}); err != nil {
-		t.logError("persist all-time error stats", err)
+	if err := t.update(time.Now().Format(dateLayout),
+		func(d *DailyStats) { d.Errors++ },
+		func(a *AllTimeStats) { a.Errors++ },
+	); err != nil {
+		t.logError("persist error stats", err)
 	}
 }
 
@@ -218,50 +207,54 @@ func (t *Tracker) dayStats(date string) DailyStats {
 	return d
 }
 
-func (t *Tracker) updateDaily(date string, mutate func(*DailyStats)) error {
+// update changes the day's and the all-time record in one transaction,
+// so they can't drift apart when one write fails. A record that no longer
+// decodes is started over (and logged) instead of failing every later
+// update.
+func (t *Tracker) update(date string, daily func(*DailyStats), allTime func(*AllTimeStats)) error {
 	return t.db.Update(func(tx *bbolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists(bucketDaily)
+		db, err := tx.CreateBucketIfNotExists(bucketDaily)
 		if err != nil {
 			return fmt.Errorf("stats: create daily bucket: %w", err)
 		}
 		d := DailyStats{Date: date, ByHoster: map[string]int64{}}
-		if v := b.Get([]byte(date)); v != nil {
+		if v := db.Get([]byte(date)); v != nil {
 			if err := json.Unmarshal(v, &d); err != nil {
-				return fmt.Errorf("stats: unmarshal daily stats: %w", err)
+				t.logError("daily stats damaged, starting the day over", err)
+				d = DailyStats{Date: date}
 			}
 			if d.ByHoster == nil {
 				d.ByHoster = map[string]int64{}
 			}
 		}
-		mutate(&d)
+		daily(&d)
 		data, err := json.Marshal(d)
 		if err != nil {
 			return fmt.Errorf("stats: marshal daily stats: %w", err)
 		}
-		return b.Put([]byte(date), data)
-	})
-}
+		if err := db.Put([]byte(date), data); err != nil {
+			return err
+		}
 
-func (t *Tracker) updateAllTime(mutate func(*AllTimeStats)) error {
-	return t.db.Update(func(tx *bbolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists(bucketAllTime)
+		ab, err := tx.CreateBucketIfNotExists(bucketAllTime)
 		if err != nil {
 			return fmt.Errorf("stats: create all-time bucket: %w", err)
 		}
 		a := AllTimeStats{ByHoster: map[string]int64{}}
-		if v := b.Get(allTimeKey); v != nil {
+		if v := ab.Get(allTimeKey); v != nil {
 			if err := json.Unmarshal(v, &a); err != nil {
-				return fmt.Errorf("stats: unmarshal all-time stats: %w", err)
+				t.logError("all-time stats damaged, starting over", err)
+				a = AllTimeStats{}
 			}
 			if a.ByHoster == nil {
 				a.ByHoster = map[string]int64{}
 			}
 		}
-		mutate(&a)
-		data, err := json.Marshal(a)
+		allTime(&a)
+		data, err = json.Marshal(a)
 		if err != nil {
 			return fmt.Errorf("stats: marshal all-time stats: %w", err)
 		}
-		return b.Put(allTimeKey, data)
+		return ab.Put(allTimeKey, data)
 	})
 }

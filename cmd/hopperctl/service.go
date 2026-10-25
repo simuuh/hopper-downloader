@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/xml"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 const (
@@ -171,6 +173,56 @@ func linuxUnitPath() (string, error) {
 	return filepath.Join(home, ".config", "systemd", "user", linuxServiceName), nil
 }
 
+// systemdUnit is the user unit running exe. The path is quoted for
+// systemd: unquoted, a space in it (a home directory like "/home/Jane
+// Doe") split ExecStart into separate arguments, and "%" starts a
+// specifier.
+func systemdUnit(exe string) string {
+	quoted := `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "%", "%%").Replace(exe) + `"`
+	return fmt.Sprintf(`[Unit]
+Description=Hopper CnL proxy + folder watcher
+
+[Service]
+ExecStart=%s run
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+`, quoted)
+}
+
+// launchdPlist is the LaunchAgent running exe, with the paths
+// XML-escaped: a "&" or "<" in a path broke the plist.
+func launchdPlist(exe, logPath string) string {
+	esc := func(s string) string {
+		var b strings.Builder
+		_ = xml.EscapeText(&b, []byte(s))
+		return b.String()
+	}
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>%s</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>%s</string>
+		<string>run</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>%s</string>
+	<key>StandardErrorPath</key>
+	<string>%s</string>
+</dict>
+</plist>
+`, esc(darwinLabel), esc(exe), esc(logPath), esc(logPath))
+}
+
 func installLinux(exe string) (string, error) {
 	unitPath, err := linuxUnitPath()
 	if err != nil {
@@ -180,17 +232,7 @@ func installLinux(exe string) (string, error) {
 		return "", err
 	}
 
-	unit := fmt.Sprintf(`[Unit]
-Description=Hopper CnL proxy + folder watcher
-
-[Service]
-ExecStart=%s run
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-`, exe)
-	if err := os.WriteFile(unitPath, []byte(unit), 0o600); err != nil {
+	if err := os.WriteFile(unitPath, []byte(systemdUnit(exe)), 0o600); err != nil {
 		return "", err
 	}
 
@@ -246,29 +288,7 @@ func installDarwin(exe string) (string, error) {
 	}
 	logPath := filepath.Join(home, "Library", "Logs", "hopperctl.log")
 
-	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>Label</key>
-	<string>%s</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>%s</string>
-		<string>run</string>
-	</array>
-	<key>RunAtLoad</key>
-	<true/>
-	<key>KeepAlive</key>
-	<true/>
-	<key>StandardOutPath</key>
-	<string>%s</string>
-	<key>StandardErrorPath</key>
-	<string>%s</string>
-</dict>
-</plist>
-`, darwinLabel, exe, logPath, logPath)
-	if err := os.WriteFile(plistPath, []byte(plist), 0o600); err != nil {
+	if err := os.WriteFile(plistPath, []byte(launchdPlist(exe, logPath)), 0o600); err != nil {
 		return "", err
 	}
 

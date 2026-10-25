@@ -220,6 +220,11 @@ func (p *Plugin) FetchDownloadURL(rawURL string, _ *plugins.Account) (string, er
 // unbounded). Each link still needs its own resolveLinkURL call — the
 // container listing doesn't return real URLs in bulk — so Expand costs
 // one request plus one more per online link.
+//
+// Bounded, because a container comes from a stranger and the caller (an
+// add request) waits for all of it: at most maxContainerLinks online
+// links, and expandTimeout in total. A link that resolves to hide.cx
+// again is skipped instead of followed.
 func (p *Plugin) Expand(rawURL string) ([]plugins.ExpandedLink, error) {
 	uuid, err := containerUUID(rawURL)
 	if err != nil {
@@ -236,14 +241,32 @@ func (p *Plugin) Expand(rawURL string) ([]plugins.ExpandedLink, error) {
 		password = *container.Password
 	}
 
-	links := make([]plugins.ExpandedLink, 0, len(container.Links))
+	online := 0
+	for _, l := range container.Links {
+		if l.LinkStatus == "online" {
+			online++
+		}
+	}
+	if online > maxContainerLinks {
+		return nil, fmt.Errorf("%s: container has %d links, more than the %d Hopper expands", pluginName, online, maxContainerLinks)
+	}
+
+	deadline := time.Now().Add(expandTimeout)
+	links := make([]plugins.ExpandedLink, 0, online)
 	for _, l := range container.Links {
 		if l.LinkStatus != "online" {
 			continue
 		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("%s: %w: resolving the container's links took longer than %s", pluginName, plugins.ErrUnavailable, expandTimeout)
+		}
 		hosterURL, err := p.resolveLinkURL(uuid, l)
 		if err != nil {
 			return nil, fmt.Errorf("%s: resolve link %s: %w", pluginName, l.ID, err)
+		}
+		if isHideCx(hosterURL) {
+			p.log.Warn("hidecx: skipping a link that points to another hide.cx container", "uuid", uuid, "link", l.ID)
+			continue
 		}
 		links = append(links, plugins.ExpandedLink{
 			URL:      hosterURL,
@@ -260,6 +283,12 @@ func (p *Plugin) Expand(rawURL string) ([]plugins.ExpandedLink, error) {
 	p.log.Info("hidecx: expanded container", "uuid", uuid, "links", len(links))
 	return links, nil
 }
+
+// maxContainerLinks and expandTimeout bound Expand (see its comment).
+const (
+	maxContainerLinks = 200
+	expandTimeout     = 2 * time.Minute
+)
 
 // expandedLinkName picks the filename an expanded item should be added
 // with: the container link's own "name" field when hide.cx actually
@@ -422,7 +451,9 @@ func (p *Plugin) resolveLinkURL(uuid string, link containerLink) (string, error)
 	}
 
 	var res linkResolveResponse
-	if err := p.getJSON(fmt.Sprintf("/containers/%s/links/%s", uuid, link.ID), &res); err != nil {
+	// link.ID comes from the container's API response: escaped, an ID
+	// like "../../x?y=" can't rewrite the path or add a query.
+	if err := p.getJSON(fmt.Sprintf("/containers/%s/links/%s", uuid, url.PathEscape(link.ID)), &res); err != nil {
 		return "", err
 	}
 	if res.URL == "" {

@@ -350,3 +350,96 @@ func TestUpdateCheck_OffByDefaultAndPersisted(t *testing.T) {
 		t.Error("UpdateCheck not persisted across restart")
 	}
 }
+
+// A failed persist leaves the settings as they were: memory and hooks
+// don't move ahead of the database (M25).
+func TestApply_FailedPersistChangesNothing(t *testing.T) {
+	db := newTestDB(t)
+	hookCalls := 0
+	m, err := New(db, defaultInitial(), Hooks{SetParallelFiles: func(int) { hookCalls++ }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hookCalls = 0
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n := 8
+	if _, err := m.Apply(Update{ParallelFiles: &n}); err == nil {
+		t.Fatal("Apply succeeded with the database closed")
+	}
+	if got := m.Get().ParallelFiles; got != 3 {
+		t.Fatalf("ParallelFiles after a failed Apply = %d, want 3", got)
+	}
+	if hookCalls != 0 {
+		t.Fatalf("hooks ran %d times for a failed Apply", hookCalls)
+	}
+}
+
+// Concurrent updates of different fields both survive: each Apply starts
+// from the previous one's result (M25).
+func TestApply_ConcurrentUpdatesBothApplied(t *testing.T) {
+	m, err := New(newTestDB(t), defaultInitial(), Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, chunks := 7, 9
+	done := make(chan error, 2)
+	go func() { _, err := m.Apply(Update{ParallelFiles: &files}); done <- err }()
+	go func() { _, err := m.Apply(Update{ParallelChunks: &chunks}); done <- err }()
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := m.Get(); got.ParallelFiles != 7 || got.ParallelChunks != 9 {
+		t.Fatalf("after two concurrent updates: files %d chunks %d, want 7 and 9", got.ParallelFiles, got.ParallelChunks)
+	}
+}
+
+// The download path can't be set to hopperd's data directory or a parent
+// of it: downloads could overwrite hopper.db or secrets.json (N9e).
+func TestApply_RefusesDownloadPathContainingDataDir(t *testing.T) {
+	m, err := New(newTestDB(t), defaultInitial(), Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := t.TempDir()
+	dataDir := filepath.Join(parent, "config")
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	m.ProtectDirs(dataDir)
+
+	for _, p := range []string{parent, dataDir} {
+		if _, err := m.Apply(Update{DownloadPath: &p}); err == nil {
+			t.Errorf("download_path %q accepted although it contains the data directory", p)
+		}
+	}
+	elsewhere := t.TempDir()
+	if _, err := m.Apply(Update{DownloadPath: &elsewhere}); err != nil {
+		t.Errorf("separate download_path refused: %v", err)
+	}
+}
+
+// Archive passwords go to unrar as arguments: a NUL byte would make every
+// extraction fail, so it is refused; empty entries are dropped (N15).
+func TestApply_ValidatesExtractPasswords(t *testing.T) {
+	m, err := New(newTestDB(t), defaultInitial(), Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Apply(Update{ExtractPasswords: []string{"ok", "bad\x00pw"}}); err == nil {
+		t.Error("password with a NUL byte accepted")
+	}
+	if _, err := m.Apply(Update{ExtractPasswords: []string{strings.Repeat("x", 257)}}); err == nil {
+		t.Error("overlong password accepted")
+	}
+	got, err := m.Apply(Update{ExtractPasswords: []string{"one", "", "two"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.ExtractPasswords, []string{"one", "two"}) {
+		t.Errorf("ExtractPasswords = %q, want the empty entry dropped", got.ExtractPasswords)
+	}
+}

@@ -253,46 +253,103 @@ func TestManager_AutoExtract_KeepsArchiveWhenDeleteAfterFalse(t *testing.T) {
 	}
 }
 
-// TestManager_ResetsInterruptedExtractionsOnStart covers the recovery
-// path for an item that was mid-extraction when hopperd was last killed:
-// runExtraction only ever runs while the process that started it is
-// alive, so an item still showing ExtractStateExtracting when a new
-// Manager starts didn't finish — it just never got the chance to report
-// success or failure. Start must reset it to extract_failed (with a
-// message pointing at the re-extract button) rather than leaving it
-// stuck as "Extracting…" forever, since RetryExtraction only accepts an
-// item already in ExtractStateExtractFailed.
-func TestManager_ResetsInterruptedExtractionsOnStart(t *testing.T) {
-	for _, state := range []ExtractState{ExtractStateExtracting, ExtractStateQueued} {
-		t.Run(string(state), func(t *testing.T) { testResetInterruptedExtraction(t, state) })
+// An extraction a shutdown or crash interrupted (still "extracting" or
+// "extract_queued" in the database) runs again on the next start when
+// auto-extract is on (M23).
+func TestManager_ResumesInterruptedExtractionsOnStart(t *testing.T) {
+	// Pending covers a shutdown while it waited for its parts on disk.
+	for _, state := range []ExtractState{ExtractStateExtracting, ExtractStateQueued, ExtractStatePending} {
+		t.Run(string(state), func(t *testing.T) {
+			fe := &fakeExtractor{}
+			mgr, baseDir := newExtractTestManager(t, fe, &fakeExtractSettings{enabled: true}, 1)
+			if err := os.WriteFile(filepath.Join(baseDir, "archive.zip"), []byte("zip content"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			it := &Item{ID: newID(), Filename: "archive.zip", ExtractState: state}
+			injectDoneItem(t, mgr, it)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mgr.Start(ctx)
+
+			waitForExtractState(t, mgr, it.ID)
+			if fe.callCount() != 1 {
+				t.Fatalf("extractor called %d times, want 1", fe.callCount())
+			}
+		})
 	}
 }
 
-func testResetInterruptedExtraction(t *testing.T, state ExtractState) {
+// With auto-extract off nothing extracts it again: the item becomes
+// extract_failed with a pointer to the re-extract button instead of
+// showing "Extracting…" forever.
+func TestManager_InterruptedExtractionFailsWhenAutoExtractOff(t *testing.T) {
 	fe := &fakeExtractor{}
-	fs := &fakeExtractSettings{enabled: true}
-	mgr, _ := newExtractTestManager(t, fe, fs, 1)
-
-	it := &Item{ID: newID(), Filename: "archive.zip", ExtractState: state}
+	mgr, _ := newExtractTestManager(t, fe, &fakeExtractSettings{enabled: false}, 1)
+	it := &Item{ID: newID(), Filename: "archive.zip", ExtractState: ExtractStateExtracting}
 	injectDoneItem(t, mgr, it)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	mgr.Start(ctx)
 
-	got, ok := mgr.Get(it.ID)
-	if !ok {
-		t.Fatal("item not found after Start")
-	}
-	if got.ExtractState != ExtractStateExtractFailed {
-		t.Errorf("ExtractState = %q, want %q", got.ExtractState, ExtractStateExtractFailed)
-	}
-	if got.ExtractError != "extraction interrupted by restart — use re-extract button" {
-		t.Errorf("ExtractError = %q, want the restart-interrupted message", got.ExtractError)
+	got, _ := mgr.Get(it.ID)
+	if got.ExtractState != ExtractStateExtractFailed || got.ExtractError != "extraction interrupted by restart — use re-extract button" {
+		t.Fatalf("ExtractState %q, ExtractError %q; want extract_failed with the restart message", got.ExtractState, got.ExtractError)
 	}
 	if fe.callCount() != 0 {
-		t.Errorf("extractor called %d times, want 0 (this is a state fixup, not a real extraction)", fe.callCount())
+		t.Errorf("extractor called %d times, want 0", fe.callCount())
 	}
+}
+
+// An extraction cut off by shutdown is not a failure: it stays
+// "extracting" so the next start resumes it, and no failure is recorded
+// (M23).
+func TestRunExtraction_ShutdownLeavesItExtracting(t *testing.T) {
+	be := &cancelAwareExtractor{started: make(chan struct{})}
+	baseDir := t.TempDir()
+	eng := downloader.New(downloader.Config{BaseDir: baseDir, RetryMax: 1, RetryBackoffBase: 5 * time.Millisecond})
+	mgr, err := New(newTestStore(t), plugins.NewRegistry(directhttp.New()), eng, nil, nil, be, &fakeExtractSettings{enabled: true}, scheduler.New(), discardLogger(), Config{ParallelFiles: 1, PollInterval: 15 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(baseDir, "archive.zip"), []byte("zip content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	it := &Item{ID: newID(), Filename: "archive.zip", ExtractState: ExtractStateExtractFailed}
+	injectDoneItem(t, mgr, it)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	mgr.Start(ctx)
+	if err := mgr.RetryExtraction(it.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	<-be.started
+	cancel() // hopperd shutting down
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if mgr.extractionPending("") {
+			time.Sleep(5 * time.Millisecond)
+			continue
+		}
+		break
+	}
+	if got, _ := mgr.Get(it.ID); got.ExtractState != ExtractStateExtracting {
+		t.Fatalf("ExtractState after shutdown = %q, want %q", got.ExtractState, ExtractStateExtracting)
+	}
+}
+
+// cancelAwareExtractor blocks until its context ends, like unrar killed
+// by a shutdown.
+type cancelAwareExtractor struct {
+	started chan struct{}
+}
+
+func (c *cancelAwareExtractor) Extract(ctx context.Context, srcPath, destDir, pkgPassword string, userPasswords []string) (*extract.Result, error) {
+	close(c.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 // TestManager_ExtractTriggeredClearedAfterCompletion covers the fix for
@@ -958,5 +1015,64 @@ func TestMaybeExtract_LogsWhyItDoesNotExtract(t *testing.T) {
 				t.Errorf("extractor called %d times, want 0", fe.callCount())
 			}
 		})
+	}
+}
+
+// An archive without a package lives in the downloads root next to every
+// other download; it is extracted into its own folder there (M3).
+func TestRunExtraction_PackagelessArchiveGetsOwnFolder(t *testing.T) {
+	fe := &fakeExtractor{}
+	mgr, baseDir := newExtractTestManager(t, fe, &fakeExtractSettings{enabled: true}, 1)
+	if err := os.WriteFile(filepath.Join(baseDir, "example.zip"), []byte("zip content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	it := &Item{ID: newID(), Filename: "example.zip", ExtractState: ExtractStateExtractFailed}
+	injectDoneItem(t, mgr, it)
+
+	if err := mgr.RetryExtraction(it.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForExtractState(t, mgr, it.ID)
+	if got, want := fe.lastCall().destDir, filepath.Join(baseDir, "example"); got != want {
+		t.Fatalf("destDir = %q, want %q", got, want)
+	}
+}
+
+// Shutdown waits for a running extraction instead of returning while it
+// still writes, and no extraction starts once it has begun (N17).
+func TestShutdown_WaitsForExtraction(t *testing.T) {
+	be := &blockingExtractor{release: make(chan struct{})}
+	baseDir := t.TempDir()
+	eng := downloader.New(downloader.Config{BaseDir: baseDir, RetryMax: 1, RetryBackoffBase: 5 * time.Millisecond})
+	mgr, err := New(newTestStore(t), plugins.NewRegistry(directhttp.New()), eng, nil, nil, be, &fakeExtractSettings{enabled: true}, scheduler.New(), discardLogger(), Config{ParallelFiles: 1, PollInterval: 15 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var items []*Item
+	for _, name := range []string{"first.zip", "second.zip"} {
+		if err := os.WriteFile(filepath.Join(baseDir, name), []byte("zip content"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		it := &Item{ID: newID(), Filename: name, ExtractState: ExtractStateExtractFailed}
+		injectDoneItem(t, mgr, it)
+		items = append(items, it)
+	}
+	if err := mgr.RetryExtraction(items[0].ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForItemExtractState(t, mgr, items[0].ID, ExtractStateExtracting)
+
+	short, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := mgr.Shutdown(short); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown with an extraction running = %v, want it to wait (deadline exceeded)", err)
+	}
+	if err := mgr.RetryExtraction(items[1].ID, ""); !errors.Is(err, ErrShuttingDown) {
+		t.Fatalf("RetryExtraction during shutdown = %v, want ErrShuttingDown", err)
+	}
+
+	close(be.release)
+	if err := mgr.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown after the extraction ended = %v", err)
 	}
 }
