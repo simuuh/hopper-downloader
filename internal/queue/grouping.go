@@ -220,7 +220,7 @@ func (m *Manager) expandLinks(links []LinkInput) []LinkInput {
 		if hoster, ok := m.matchHoster(l.URL); ok {
 			if exp, ok := hoster.(plugins.Expander); ok {
 				if expanded, err := exp.Expand(l.URL); err == nil && len(expanded) > 0 {
-					for _, x := range expanded {
+					for _, x := range m.externalLinksOnly(l.URL, expanded) {
 						pw := x.Password
 						if pw == "" {
 							pw = l.Password

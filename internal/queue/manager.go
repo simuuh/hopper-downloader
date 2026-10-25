@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	mrand "math/rand/v2"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -2155,7 +2156,10 @@ func (m *Manager) addItems(pkgID, rawURL string, opts AddOptions) ([]*Item, erro
 		if hoster, ok := m.matchHoster(rawURL); ok {
 			if exp, ok := hoster.(plugins.Expander); ok {
 				if links, expErr := exp.Expand(rawURL); expErr == nil && len(links) > 0 {
-					return m.addExpandedItems(pkgID, links, opts)
+					if links = m.externalLinksOnly(rawURL, links); len(links) > 0 {
+						return m.addExpandedItems(pkgID, links, opts)
+					}
+					return nil, fmt.Errorf("queue: container %q only points to internal addresses", rawURL)
 				}
 				// Expansion not usable right now (transient API error, or
 				// the plugin found nothing to expand) — fall through and
@@ -2171,6 +2175,44 @@ func (m *Manager) addItems(pkgID, rawURL string, opts AddOptions) ([]*Item, erro
 		return nil, err
 	}
 	return []*Item{it}, nil
+}
+
+// externalLinksOnly drops expanded links that point to this machine or
+// the local network. A container's links are chosen by whoever made the
+// container, not by the user, and hopperd would fetch them from inside
+// the LAN (router admin pages, cloud metadata at 169.254.169.254). Only
+// literal addresses and localhost are recognized; a public host name
+// resolving to a private address is not caught here.
+func (m *Manager) externalLinksOnly(container string, links []plugins.ExpandedLink) []plugins.ExpandedLink {
+	out := links[:0:0]
+	for _, l := range links {
+		if internalHost(l.URL) {
+			m.log.Warn("queue: skipping a container link to an internal address", "container", container, "link", l.URL)
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// internalHost reports whether rawURL's host is localhost or a loopback,
+// private, link-local or unspecified IP address.
+func internalHost(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() ||
+		addr.IsLinkLocalMulticast() || addr.IsUnspecified()
 }
 
 func validHTTPURL(rawURL string) error {

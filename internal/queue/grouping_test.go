@@ -181,3 +181,47 @@ func TestAddLinks_ContainerPartsMergeWithDirectParts(t *testing.T) {
 		}
 	}
 }
+
+// A container's links can't send hopperd to this machine or the LAN
+// (M1): such links are dropped, the external ones still added.
+func TestAddLinks_ContainerLinksToInternalAddressesDropped(t *testing.T) {
+	exp := &fakeExpander{links: []plugins.ExpandedLink{
+		{URL: "https://host.example/x1", Name: "rel.part1.rar"},
+		{URL: "http://192.168.1.1/cgi-bin/x", Name: "router"},
+		{URL: "http://169.254.169.254/latest/meta-data", Name: "metadata"},
+		{URL: "http://localhost:9667/api/v1/queue", Name: "self"},
+	}}
+	reg := plugins.NewRegistry(directhttp.New(), exp)
+	eng := downloader.New(downloader.Config{BaseDir: t.TempDir()})
+	mgr, err := New(newTestStore(t), reg, eng, nil, nil, nil, nil, scheduler.New(), discardLogger(), Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := mgr.AddLinks([]LinkInput{{URL: "https://container.example/abc"}}, "", AddOptions{StartPaused: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Items) != 1 || res.Items[0].URL != "https://host.example/x1" {
+		t.Fatalf("items = %+v, want only the external link", res.Items)
+	}
+}
+
+func TestInternalHost(t *testing.T) {
+	cases := map[string]bool{
+		"https://host.example/file":     false,
+		"https://203.0.113.5/file":      false,
+		"http://127.0.0.1/x":            true,
+		"http://[::1]/x":                true,
+		"http://10.1.2.3/x":             true,
+		"http://[fe80::1]/x":            true,
+		"http://0.0.0.0/x":              true,
+		"http://LOCALHOST./x":           true,
+		"http://nas.localhost/x":        true,
+		"http://[::ffff:192.168.0.1]/x": true,
+	}
+	for in, want := range cases {
+		if got := internalHost(in); got != want {
+			t.Errorf("internalHost(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
