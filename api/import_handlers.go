@@ -122,8 +122,10 @@ func (s *Server) parseImportFile(r *http.Request, header *multipart.FileHeader) 
 	}
 	container, err := dlc.Parse(r.Context(), s.dlcClient, s.cfg.DLCAPIURL, data)
 	if err != nil {
+		// Details only in the log: the error can carry the key service's
+		// URL with the container's key in it.
 		s.log.Warn("api: dlc parse failed", "filename", header.Filename, "error", err)
-		return nil, errors.New("failed to parse .dlc file: " + err.Error())
+		return nil, errors.New("failed to parse .dlc file (see hopperd log for details)")
 	}
 	return container, nil
 }

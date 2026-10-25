@@ -136,7 +136,7 @@ func (s *Server) handleSetAccountEnabled(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.accounts.SetEnabled(id, req.Enabled); err != nil {
-		writeAccountActionError(w, err)
+		s.writeAccountActionError(w, err)
 		return
 	}
 	acc, _ := s.accounts.Get(id)
@@ -182,7 +182,7 @@ func (s *Server) handleValidateAccount(w http.ResponseWriter, r *http.Request) {
 
 	updated, err := s.accounts.SetValidation(id, info)
 	if err != nil {
-		writeAccountActionError(w, err)
+		s.writeAccountActionError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
@@ -190,16 +190,20 @@ func (s *Server) handleValidateAccount(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	if err := s.accounts.Delete(r.PathValue("id")); err != nil {
-		writeAccountActionError(w, err)
+		s.writeAccountActionError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func writeAccountActionError(w http.ResponseWriter, err error) {
+// writeAccountActionError answers with a generic message for anything
+// but "not found": the error text comes from the database or crypto
+// layer and is for the log, not the client.
+func (s *Server) writeAccountActionError(w http.ResponseWriter, err error) {
 	if errors.Is(err, account.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	writeError(w, http.StatusInternalServerError, err.Error())
+	s.log.Error("api: account action failed", "error", err)
+	writeError(w, http.StatusInternalServerError, "account update failed (see hopperd log)")
 }
