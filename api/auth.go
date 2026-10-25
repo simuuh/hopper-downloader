@@ -130,7 +130,14 @@ func (s *Server) wsAuth(next http.Handler) http.Handler {
 			raw = subprotocolToken(r.Header.Get("Sec-WebSocket-Protocol"))
 		}
 		if raw == "" {
-			raw = r.URL.Query().Get("token")
+			// Deprecated: a token in the URL ends up in reverse-proxy
+			// access logs. Kept for existing integrations; the Web UI
+			// uses the subprotocol.
+			if raw = r.URL.Query().Get("token"); raw != "" {
+				s.wsQueryTokenWarn.Do(func() {
+					s.log.Warn("api: a client authenticates the WebSocket with ?token= in the URL, which proxies log; this is deprecated, send it as Sec-WebSocket-Protocol: hopper.bearer, <token> instead")
+				})
+			}
 		}
 		if raw == "" {
 			writeError(w, http.StatusUnauthorized, "missing token")

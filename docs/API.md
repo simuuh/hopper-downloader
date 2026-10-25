@@ -129,16 +129,18 @@ itself once that time passes.
 
 ## Live updates: `/ws`
 
-WebSocket, same auth requirement, with one exception: since browsers
-can't set custom headers on the WebSocket handshake, you can pass the
-token as a query parameter instead of a header:
+WebSocket, same auth requirement. Browsers can't set custom headers on
+the WebSocket handshake, so they offer the token as a subprotocol
+instead (the server echoes `hopper.bearer` back):
 
-```
-wss://host/ws?token=<JWT>
+```js
+new WebSocket("wss://host/ws", ["hopper.bearer", token])
 ```
 
-(Prefer the `Authorization` header when your client can set one — the
-query-string form ends up in server/proxy access logs.)
+Other clients can use the `Authorization` header. The old
+`wss://host/ws?token=<JWT>` form still works but is deprecated (hopperd
+logs a warning): the URL, token included, ends up in server and proxy
+access logs.
 
 The server pushes JSON `Event` frames as things change:
 

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -154,6 +155,7 @@ type Server struct {
 	bodyTimeout       time.Duration
 	importBodyTimeout time.Duration
 	trustedProxies    []netip.Prefix
+	wsQueryTokenWarn  sync.Once
 }
 
 // Per-request read deadlines (see readDeadline). Generous: they only

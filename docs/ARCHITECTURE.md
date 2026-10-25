@@ -427,8 +427,8 @@ A valid re-check, a credential update or re-enabling ends the cooldown.
   isn't a trusted proxy) instead of the proxy's address.
 - The WebSocket authenticates via `Sec-WebSocket-Protocol: hopper.bearer,
   <jwt>` (not the URL, which ends up in proxy logs; `?token=` remains a
-  fallback), closes when the token expires and accepts at most 4 KiB
-  frames.
+  deprecated fallback that logs a warning), closes when the token
+  expires and accepts at most 4 KiB frames.
 - Per-IP rate-limiter entries are evicted after 10 idle minutes.
 - Bulk cancel is one request (`DELETE /queue`), so clearing many items
   can't trip the per-client rate limiter.
