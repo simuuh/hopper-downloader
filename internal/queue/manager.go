@@ -584,6 +584,10 @@ func (m *Manager) pickNext(ctx context.Context) (*Item, *runHandle) {
 
 	now := time.Now()
 	order := newQueueOrder(m.items)
+	blocked := func(*Item) bool { return false }
+	if m.cfg.SequentialParts {
+		blocked = order.sequentialBlocked(m.items)
+	}
 	var best *Item
 	for _, it := range m.items {
 		if !it.runnable(now) {
@@ -592,7 +596,7 @@ func (m *Manager) pickNext(ctx context.Context) (*Item, *runHandle) {
 		if _, running := m.active[it.ID]; running {
 			continue
 		}
-		if m.cfg.SequentialParts && m.isSequentialBlocked(it) {
+		if blocked(it) {
 			continue
 		}
 		if best == nil || order.less(it, best) {
@@ -616,47 +620,6 @@ func (m *Manager) pickNext(ctx context.Context) (*Item, *runHandle) {
 	cp := *best
 	m.publish(Event{Type: EventItemUpdated, Item: &cp})
 	return &cp, h
-}
-
-// isSequentialBlocked reports whether it must not start yet because a
-// lower-numbered part of the same archive set (same PackageID, same
-// extract.GroupBase) hasn't started yet (still StateQueued) — parts never
-// overtake each other. They may run side by side: once part1 has started,
-// part2 can take the next free slot, so parallel_files fills the topmost
-// package first instead of spreading over several packages.
-//
-// queueOrder already picks parts in part-number order; this guard covers
-// the case where a lower part exists but isn't runnable right now (e.g.
-// waiting on a hoster's retry_after), so a later part doesn't jump ahead.
-// StateError and StatePaused don't block, or one dead or paused part would
-// strand the rest of the set.
-//
-// Must be called with m.mu held.
-func (m *Manager) isSequentialBlocked(it *Item) bool {
-	if it.PackageID == "" || it.Filename == "" || !extract.IsArchive(it.Filename) {
-		return false
-	}
-	n, ok := extract.PartNumber(it.Filename)
-	if !ok {
-		return false
-	}
-	group := extract.GroupBase(it.Filename)
-	for _, sib := range m.items {
-		if sib.ID == it.ID || sib.PackageID != it.PackageID || sib.Filename == "" {
-			continue
-		}
-		if !extract.IsArchive(sib.Filename) || extract.GroupBase(sib.Filename) != group {
-			continue
-		}
-		sn, sok := extract.PartNumber(sib.Filename)
-		if !sok || sn >= n {
-			continue
-		}
-		if sib.State == StateQueued {
-			return true
-		}
-	}
-	return false
 }
 
 // matchHoster resolves the plugin that should handle rawURL against this

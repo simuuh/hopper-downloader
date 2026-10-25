@@ -23,6 +23,17 @@ import (
 type queueOrder struct {
 	rank map[string]int64
 	prio map[string]Priority
+	// parts holds every numbered archive part's set and number, keyed by
+	// item ID: parsed once per order instead of on every comparison,
+	// which with thousands of parts meant millions of regex matches per
+	// dispatch, all under the queue lock.
+	parts map[string]partInfo
+}
+
+type partInfo struct {
+	set   string // lowercased GroupBase, for ordering
+	group string // GroupBase as written, for sequential_parts
+	n     int
 }
 
 // groupKey identifies an item's display group.
@@ -35,10 +46,13 @@ func groupKey(it *Item) string {
 
 // newQueueOrder precomputes the group ranks/priorities for items.
 func newQueueOrder(items map[string]*Item) queueOrder {
-	o := queueOrder{rank: make(map[string]int64), prio: make(map[string]Priority)}
+	o := queueOrder{rank: make(map[string]int64), prio: make(map[string]Priority), parts: make(map[string]partInfo)}
 	openPrio := make(map[string]Priority) // max priority of unfinished items
 	allPrio := make(map[string]Priority)  // max priority of all items
 	for _, it := range items {
+		if p, ok := parsePart(it); ok {
+			o.parts[it.ID] = p
+		}
 		g := groupKey(it)
 		if r, ok := o.rank[g]; !ok || it.Position < r {
 			o.rank[g] = it.Position
@@ -75,9 +89,9 @@ func (o queueOrder) less(a, b *Item) bool {
 	if a.Priority != b.Priority {
 		return a.Priority > b.Priority
 	}
-	if sa, na, ok := partOf(a); ok {
-		if sb, nb, ok := partOf(b); ok && sa == sb && na != nb {
-			return na < nb
+	if pa, ok := o.part(a); ok {
+		if pb, ok := o.part(b); ok && pa.set == pb.set && pa.n != pb.n {
+			return pa.n < pb.n
 		}
 	}
 	if a.Position != b.Position {
@@ -86,15 +100,62 @@ func (o queueOrder) less(a, b *Item) bool {
 	return a.CreatedAt.Before(b.CreatedAt)
 }
 
-// partOf returns an item's archive set (lowercased GroupBase) and its
-// part number, if it is a numbered archive part.
-func partOf(it *Item) (set string, n int, ok bool) {
+// part returns it's archive part info, from the precomputed table when
+// it was in the item set the order was built from.
+func (o queueOrder) part(it *Item) (partInfo, bool) {
+	if p, ok := o.parts[it.ID]; ok {
+		return p, true
+	}
+	if _, known := o.rank[groupKey(it)]; known && o.parts != nil {
+		return partInfo{}, false // parsed already: not a numbered part
+	}
+	return parsePart(it)
+}
+
+// parsePart returns an item's archive set and part number, if it is a
+// numbered archive part.
+func parsePart(it *Item) (partInfo, bool) {
 	if it.Filename == "" || !extract.IsArchive(it.Filename) {
-		return "", 0, false
+		return partInfo{}, false
 	}
-	n, ok = extract.PartNumber(it.Filename)
+	n, ok := extract.PartNumber(it.Filename)
 	if !ok {
-		return "", 0, false
+		return partInfo{}, false
 	}
-	return strings.ToLower(extract.GroupBase(it.Filename)), n, true
+	group := extract.GroupBase(it.Filename)
+	return partInfo{set: strings.ToLower(group), group: group, n: n}, true
+}
+
+// sequentialBlocked builds the sequential_parts check for one dispatch:
+// an archive part is held back while a lower-numbered part of its set
+// (same PackageID, same extract.GroupBase) is still queued, so parts
+// never overtake each other. They may run side by side: once part1 has
+// started, part2 can take the next free slot, so parallel_files fills the
+// topmost package first instead of spreading over several packages.
+//
+// The order already picks parts by number; this covers a lower part that
+// isn't runnable right now (e.g. waiting on a hoster's retry_after).
+// StateError and StatePaused don't block, or one dead or paused part
+// would strand the rest of the set. Built in one pass over the items,
+// instead of a pass per candidate; call with Manager.mu held.
+func (o queueOrder) sequentialBlocked(items map[string]*Item) func(*Item) bool {
+	minQueued := map[string]int{} // package|group -> lowest queued part number
+	for _, it := range items {
+		p, ok := o.parts[it.ID]
+		if !ok || it.PackageID == "" || it.State != StateQueued {
+			continue
+		}
+		key := it.PackageID + "|" + p.group
+		if n, seen := minQueued[key]; !seen || p.n < n {
+			minQueued[key] = p.n
+		}
+	}
+	return func(it *Item) bool {
+		p, ok := o.parts[it.ID]
+		if !ok || it.PackageID == "" {
+			return false
+		}
+		n, seen := minQueued[it.PackageID+"|"+p.group]
+		return seen && n < p.n
+	}
 }
