@@ -58,6 +58,25 @@ jobs:
             echo "code=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # No `needs: changes` / `if:` — a secret can land in a docs-only change
+  # just as well, so this runs for every push and PR.
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history: gitleaks scans the commits of the PR/push, not
+          # only the final tree.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PR comments would need pull-requests: write; findings show up
+          # in the job log (redacted) and the job summary instead.
+          GITLEAKS_ENABLE_COMMENTS: false
+
   web:
     name: Web UI (lint + build)
     needs: changes
