@@ -22,7 +22,9 @@ updates:
 
   - package-ecosystem: docker
     directory: /docker
-    schedule: { interval: monthly }
+    schedule: { interval: weekly }
+    groups:
+      docker: { patterns: ['*'] }
     ignore:
       # Go: stay on a toolchain golangci-lint/govulncheck releases can load
       # (go.mod toolchain go1.26.x); bump go.mod, CI and Dockerfile together.
