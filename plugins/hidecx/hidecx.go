@@ -30,6 +30,7 @@ package hidecx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -198,7 +199,8 @@ func (p *Plugin) Resolve(rawURL string, _ *plugins.Account) (*plugins.FileInfo, 
 	if err != nil {
 		return nil, err
 	}
-	return hoster.Resolve(finalURL, acc)
+	info, err := hoster.Resolve(finalURL, acc)
+	return info, delegateErr(hoster, err)
 }
 
 // FetchDownloadURL implements plugins.Hoster: resolve the container as
@@ -209,7 +211,27 @@ func (p *Plugin) FetchDownloadURL(rawURL string, _ *plugins.Account) (string, er
 	if err != nil {
 		return "", err
 	}
-	return hoster.FetchDownloadURL(finalURL, acc)
+	u, err := hoster.FetchDownloadURL(finalURL, acc)
+	return u, delegateErr(hoster, err)
+}
+
+// delegateErr attributes an error of the delegate plugin to it. The
+// queue reads ErrAccountRequired and ErrUnsupportedHost as "this plugin
+// can't serve the URL" and moves on to the next plugin for the hide.cx
+// URL — which is the directhttp catch-all, downloading hide.cx's HTML
+// page. The delegate's account or host status says nothing about
+// hide.cx, so those two become a transient ErrUnavailable: the item is
+// retried later, when the resolver may pick another delegate or
+// account. Every other error keeps its identity (ErrNotFound still
+// fails the item for good).
+func delegateErr(delegate plugins.Hoster, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, plugins.ErrAccountRequired) || errors.Is(err, plugins.ErrUnsupportedHost) {
+		return fmt.Errorf("%s: via %s: %v: %w", pluginName, delegate.Name(), err, plugins.ErrUnavailable)
+	}
+	return fmt.Errorf("%s: via %s: %w", pluginName, delegate.Name(), err)
 }
 
 // Expand implements plugins.Expander: unlike Resolve/FetchDownloadURL,

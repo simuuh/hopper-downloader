@@ -722,3 +722,51 @@ func TestExpand_SkipsNestedContainers(t *testing.T) {
 		t.Fatalf("links = %+v, want only the host.example one", links)
 	}
 }
+
+// newDelegatingPlugin serves a one-link container whose link resolves
+// to a placeholder hoster URL handled by target.
+func newDelegatingPlugin(t *testing.T, target *fakeHoster) *Plugin {
+	t.Helper()
+	srv := httptest.NewServer(containerHandler(t, containerResponse{
+		AccessStatus: "online",
+		Links:        []containerLink{{ID: "link-1", Host: "hoster.example", LinkStatus: "online"}},
+	}, map[string]string{"link-1": "https://hoster.example/file/placeholder"}))
+	t.Cleanup(srv.Close)
+	return newTestPlugin(srv, func(string) (plugins.Hoster, *plugins.Account, bool) {
+		return target, nil, true
+	})
+}
+
+// A delegate's "try another plugin" errors must not reach the queue as
+// such: it would exclude hidecx and fall through to directhttp for the
+// hide.cx URL.
+func TestDelegateErrors_FallbackSentinelsBecomeUnavailable(t *testing.T) {
+	const containerURL = "https://hide.cx/container/" + containerHandlerUUID
+	for _, sentinel := range []error{plugins.ErrAccountRequired, plugins.ErrUnsupportedHost} {
+		t.Run(sentinel.Error(), func(t *testing.T) {
+			p := newDelegatingPlugin(t, &fakeHoster{name: "debrid", resolveErr: sentinel, downloadErr: sentinel})
+
+			_, rErr := p.Resolve(containerURL, nil)
+			_, fErr := p.FetchDownloadURL(containerURL, nil)
+			for name, err := range map[string]error{"Resolve": rErr, "FetchDownloadURL": fErr} {
+				if errors.Is(err, sentinel) {
+					t.Errorf("%s leaks %v to the queue", name, sentinel)
+				}
+				if !errors.Is(err, plugins.ErrUnavailable) {
+					t.Errorf("%s err = %v, want ErrUnavailable", name, err)
+				}
+				if err == nil || !strings.Contains(err.Error(), "via debrid") {
+					t.Errorf("%s err = %v, want the delegate named", name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestDelegateErrors_OtherErrorsKeepIdentity(t *testing.T) {
+	p := newDelegatingPlugin(t, &fakeHoster{name: "debrid", resolveErr: plugins.ErrNotFound})
+	_, err := p.Resolve("https://hide.cx/container/"+containerHandlerUUID, nil)
+	if !errors.Is(err, plugins.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound kept", err)
+	}
+}
