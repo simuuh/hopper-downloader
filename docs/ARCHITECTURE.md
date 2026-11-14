@@ -284,7 +284,7 @@ AllDebrid's "delayed" links are polled every 5 s for up to 2 min.
 | --- | --- | --- |
 | realdebrid | endpoints, auth, `/hosts/status`, free-account `/user` shape | error code 9 = traffic exhausted |
 | rapidgator | — (v2 API paths/params agree across several community clients, not checked against the live API) | everything, notably `premium_end_time` type, free-tier `/file/download` POST shape, "Session doesn't exist" wording |
-| onefichier | base URL, auth header, `file/info`, `download/get_token` | `user/info` response (premium-expiry field name), free-tier `delay` |
+| onefichier | base URL, auth header, `file/info`, `download/get_token` | `user/info` response (premium-expiry field name), free-tier `delay`, wording of `KO` messages (not found vs. flood) |
 | katfile | full API incl. two-key auth, error envelope (errors use HTTP 200), date format | free-download flow end to end (not implemented) |
 | ddownload | full API endpoint list; no download endpoint exists | `status: 451` meaning |
 | hidecx | container + link JSON API, required headers | other `access_status` values |

@@ -142,7 +142,7 @@ func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo
 		return nil, fmt.Errorf("%s: decode file/info response: %w", pluginName, err)
 	}
 	if body.Status == "KO" {
-		return nil, fmt.Errorf("%s: %s: %w", pluginName, body.Message, plugins.ErrNotFound)
+		return nil, fmt.Errorf("%s: %s: %w", pluginName, body.Message, koErr(body.Message))
 	}
 	if body.Filename == "" {
 		return nil, fmt.Errorf("%s: %w", pluginName, plugins.ErrNotFound)
@@ -181,7 +181,7 @@ func (p *Plugin) FetchDownloadURL(rawURL string, acc *plugins.Account) (string, 
 		return "", fmt.Errorf("%s: decode download/get_token response: %w", pluginName, err)
 	}
 	if body.Status == "KO" {
-		return "", fmt.Errorf("%s: %s: %w", pluginName, body.Message, plugins.ErrUnavailable)
+		return "", fmt.Errorf("%s: %s: %w", pluginName, body.Message, koErr(body.Message))
 	}
 	if body.URL == "" {
 		return "", fmt.Errorf("%s: %w: empty download URL in response", pluginName, plugins.ErrUnavailable)
@@ -266,6 +266,27 @@ func statusErr(code int) error {
 		return plugins.ErrUnavailable
 	default:
 		return fmt.Errorf("%s: unexpected HTTP status %d", pluginName, code)
+	}
+}
+
+// koErr classifies the message of a {"status":"KO"} answer, which
+// 1fichier sends with HTTP 200 for every kind of failure. Only a message
+// that clearly says the file is gone becomes ErrNotFound — that fails the
+// item for good, so an auth or flood error must never land there. Flood
+// messages become ErrRateLimited, everything else the transient
+// ErrUnavailable. The message wording is not verified against the live
+// API, hence the loose matching.
+func koErr(message string) error {
+	m := strings.ToLower(message)
+	switch {
+	case strings.Contains(m, "flood"), strings.Contains(m, "too many"):
+		return plugins.ErrRateLimited
+	case strings.Contains(m, "not found"), strings.Contains(m, "deleted"),
+		strings.Contains(m, "removed"), strings.Contains(m, "does not exist"),
+		strings.Contains(m, "doesn't exist"):
+		return plugins.ErrNotFound
+	default:
+		return plugins.ErrUnavailable
 	}
 }
 
