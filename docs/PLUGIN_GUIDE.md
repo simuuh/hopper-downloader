@@ -14,14 +14,20 @@ registering it in `cmd/hopperd/main.go`.
 
 type Hoster interface {
     Match(url string) bool
-    Resolve(url string, acc *Account) (*FileInfo, error)
-    FetchDownloadURL(url string, acc *Account) (string, error)
+    Resolve(ctx context.Context, url string, acc *Account) (*FileInfo, error)
+    FetchDownloadURL(ctx context.Context, url string, acc *Account) (string, error)
     Name() string
     Domains() []string
 }
 ```
 
 - **Match** — cheap, no network I/O. Usually a hostname check.
+- **ctx** — every method that talks to the network takes the caller's
+  context: the download's own context in the queue, the HTTP request's
+  in the API. Derive your request timeout from it
+  (`context.WithTimeout(ctx, …)`) and build requests with
+  `http.NewRequestWithContext`, so pausing, cancelling or shutting
+  down stops a slow hoster call right away.
 - **Resolve** — look up file metadata (name, size, availability) without
   downloading. `acc` is `nil` when the download queue has no account
   configured for this hoster's key; return `plugins.ErrAccountRequired`
@@ -111,8 +117,8 @@ as if it simply doesn't have that capability, never an error:
   all (see rapidgator's stub vs. onefichier/realdebrid). Gates whether
   the plugin shows up in the Web UI's "add account" dropdown.
 - **`DisplayName() string`** — a nicer Web UI label than `Name()`.
-- **`AccountValidator`** (`ValidateAccount(*Account) (*AccountInfo,
-  error)`) — check a configured account against the hoster's own API
+- **`AccountValidator`** (`ValidateAccount(ctx context.Context, *Account)
+  (*AccountInfo, error)`) — check a configured account against the hoster's own API
   (see realdebrid's `GET /user`).
 - **`FreeDownloader`** (`FetchFreeDownloadURL(ctx context.Context, url
   string, acc *Account) (string, error)`) — a fallback download path for
@@ -139,7 +145,7 @@ as if it simply doesn't have that capability, never an error:
   server-side Go HTTP client) can automate or honestly represent — see
   each package's own doc comment before assuming a "free download"
   feature is automatable just because the hoster's website has one.
-- **`Expander`** (`Expand(url string) ([]ExpandedLink, error)`) — a
+- **`Expander`** (`Expand(ctx context.Context, url string) ([]ExpandedLink, error)`) — a
   single URL your plugin matches can actually represent *multiple*
   downloadable files (see `plugins/hidecx`: one hide.cx container can
   hold every part of a multi-part archive, a variable count confirmed
@@ -173,7 +179,7 @@ fallback.
 
 Key points:
 
-- `Expand(url string) ([]ExpandedLink, error)` returns every real,
+- `Expand(ctx, url) ([]ExpandedLink, error)` returns every real,
   already-resolved hoster URL the container holds — distinct files
   (e.g. `.part1.rar` through `.partN.rar`), not alternate mirrors of
   one file.

@@ -1,6 +1,7 @@
 package directhttp
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -41,7 +42,7 @@ func TestResolve_UsesContentDispositionAndLength(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	info, err := New().Resolve(srv.URL+"/download", nil)
+	info, err := New().Resolve(context.Background(), srv.URL+"/download", nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -62,7 +63,7 @@ func TestResolve_FallsBackToURLPath(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	info, err := New().Resolve(srv.URL+"/path/to/my%20file.zip", nil)
+	info, err := New().Resolve(context.Background(), srv.URL+"/path/to/my%20file.zip", nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestResolve_NotFound(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	_, err := New().Resolve(srv.URL, nil)
+	_, err := New().Resolve(context.Background(), srv.URL, nil)
 	if err != plugins.ErrNotFound {
 		t.Errorf("err = %v, want plugins.ErrNotFound", err)
 	}
@@ -89,7 +90,7 @@ func TestResolve_RateLimited(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	_, err := New().Resolve(srv.URL, nil)
+	_, err := New().Resolve(context.Background(), srv.URL, nil)
 	if err != plugins.ErrRateLimited {
 		t.Errorf("err = %v, want plugins.ErrRateLimited", err)
 	}
@@ -101,7 +102,7 @@ func TestResolve_ServerError(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	_, err := New().Resolve(srv.URL, nil)
+	_, err := New().Resolve(context.Background(), srv.URL, nil)
 	if err == nil {
 		t.Fatal("expected an error for HTTP 500")
 	}
@@ -110,7 +111,7 @@ func TestResolve_ServerError(t *testing.T) {
 func TestFetchDownloadURL_ReturnsInputUnchanged(t *testing.T) {
 	p := New()
 	url := "https://example.com/file.zip"
-	got, err := p.FetchDownloadURL(url, nil)
+	got, err := p.FetchDownloadURL(context.Background(), url, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestResolve_TooManyRedirects(t *testing.T) {
 	t.Cleanup(srv.Close)
 	target = srv.URL + "/loop"
 
-	_, err := New().Resolve(srv.URL+"/loop", nil)
+	_, err := New().Resolve(context.Background(), srv.URL+"/loop", nil)
 	if err == nil {
 		t.Fatal("expected an error for a redirect loop")
 	}

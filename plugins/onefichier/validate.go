@@ -31,13 +31,13 @@ const oneFichierDateLayout = "2006-01-02 15:04:05"
 // /user/info.cgi — any account-scoped endpoint would do to confirm the
 // key works; this one also happens to be where premium status/expiry
 // would live, if 1fichier reports it (see premiumExpiryFields).
-func (p *Plugin) ValidateAccount(acc *plugins.Account) (*plugins.AccountInfo, error) {
+func (p *Plugin) ValidateAccount(ctx context.Context, acc *plugins.Account) (*plugins.AccountInfo, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return nil, plugins.ErrAccountRequired
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	resp, err := p.do(ctx, "/user/info.cgi", token, map[string]any{})

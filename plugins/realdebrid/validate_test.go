@@ -1,6 +1,7 @@
 package realdebrid
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -39,7 +40,7 @@ func TestValidateAccount_Success(t *testing.T) {
 		"expiration": "2026-12-31T00:00:00.000Z",
 	})
 
-	info, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"api_token": "test-token"}})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"api_token": "test-token"}})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestValidateAccount_Success(t *testing.T) {
 func TestValidateAccount_InvalidToken(t *testing.T) {
 	p := newValidateTestPlugin(t, &fakeTokens{token: "bad-token"}, http.StatusUnauthorized, map[string]any{})
 
-	info, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"api_token": "bad-token"}})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"api_token": "bad-token"}})
 	if err != nil {
 		t.Fatalf("ValidateAccount returned an error, want a (Valid: false) result: %v", err)
 	}
@@ -72,7 +73,7 @@ func TestValidateAccount_InvalidToken(t *testing.T) {
 func TestValidateAccount_NoTokenConfigured(t *testing.T) {
 	p := newTestPlugin(t, http.NotFoundHandler(), "")
 
-	_, err := p.ValidateAccount(nil)
+	_, err := p.ValidateAccount(context.Background(), nil)
 	if err != plugins.ErrAccountRequired {
 		t.Errorf("err = %v, want plugins.ErrAccountRequired", err)
 	}
@@ -84,7 +85,7 @@ func TestValidateAccount_FallsBackToPassword(t *testing.T) {
 	// Password (see plugins.TokenFromAccount).
 	p := newValidateTestPlugin(t, &fakeTokens{password: "webui-token"}, http.StatusOK, map[string]any{"type": "premium"})
 
-	info, err := p.ValidateAccount(&plugins.Account{Password: "webui-token"})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Password: "webui-token"})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}
@@ -117,7 +118,7 @@ func TestValidateAccount_WarmsHostsCache(t *testing.T) {
 		t.Fatal("setup: /hosts/status should not have been called yet")
 	}
 
-	if _, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"api_token": "test-token"}}); err != nil {
+	if _, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"api_token": "test-token"}}); err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}
 	if got := atomic.LoadInt32(&hostsCalls); got != 1 {
@@ -140,7 +141,7 @@ func TestValidateAccount_WarmsHostsCache(t *testing.T) {
 func TestValidateAccount_FreeAccountReportsNoExpiry(t *testing.T) {
 	p := newValidateTestPlugin(t, &fakeTokens{token: "test-token"}, http.StatusOK, map[string]any{"type": "free"})
 
-	info, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"api_token": "test-token"}})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"api_token": "test-token"}})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestValidateAccount_FreeAccountIgnoresBogusExpiration(t *testing.T) {
 		"expiration": "1970-01-01T00:00:00.000Z",
 	})
 
-	info, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"api_token": "test-token"}})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"api_token": "test-token"}})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}
@@ -219,7 +220,7 @@ func TestValidateAccount_InvalidTokenClearsHostsCache(t *testing.T) {
 	acc := &plugins.Account{Extra: map[string]string{"api_token": "test-token"}}
 
 	// Starts out valid: ValidateAccount warms the cache, Match succeeds.
-	if _, err := p.ValidateAccount(acc); err != nil {
+	if _, err := p.ValidateAccount(context.Background(), acc); err != nil {
 		t.Fatalf("ValidateAccount (valid): %v", err)
 	}
 	if !p.Match("https://rapidgator.net/file/123") {
@@ -228,7 +229,7 @@ func TestValidateAccount_InvalidTokenClearsHostsCache(t *testing.T) {
 
 	// Token is now revoked/expired: both endpoints start returning 401.
 	status.Store(int32(http.StatusUnauthorized))
-	info, err := p.ValidateAccount(acc)
+	info, err := p.ValidateAccount(context.Background(), acc)
 	if err != nil {
 		t.Fatalf("ValidateAccount (invalid): %v", err)
 	}

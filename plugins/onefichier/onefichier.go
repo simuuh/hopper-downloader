@@ -26,6 +26,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/simuuh/hopper-downloader/plugins"
 )
 
@@ -33,6 +35,12 @@ const (
 	pluginName     = "onefichier"
 	apiBase        = "https://api.1fichier.com/v1"
 	requestTimeout = 30 * time.Second
+
+	// requestsPerSecond and rateLimiterBurst pace API calls. 1fichier
+	// temporarily bans clients that flood its API; the numbers are a
+	// conservative choice of ours, not a documented limit.
+	requestsPerSecond = 1.0
+	rateLimiterBurst  = 2
 )
 
 // TokenSource resolves the current 1fichier API key from the configured
@@ -49,9 +57,10 @@ type TokenSource interface {
 
 // Plugin is the 1fichier Hoster implementation.
 type Plugin struct {
-	tokens TokenSource
-	client *http.Client
-	log    *slog.Logger
+	tokens  TokenSource
+	client  *http.Client
+	limiter *rate.Limiter
+	log     *slog.Logger
 
 	// baseURL is overridden by tests; production code always uses
 	// apiBase.
@@ -68,6 +77,7 @@ func New(tokens TokenSource, log *slog.Logger) *Plugin {
 	return &Plugin{
 		tokens:  tokens,
 		client:  &http.Client{Timeout: requestTimeout},
+		limiter: rate.NewLimiter(rate.Limit(requestsPerSecond), rateLimiterBurst),
 		log:     log,
 		baseURL: apiBase,
 	}
@@ -103,13 +113,13 @@ func (p *Plugin) Match(rawURL string) bool {
 }
 
 // Resolve implements plugins.Hoster via POST /file/info.cgi.
-func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (p *Plugin) Resolve(ctx context.Context, rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return nil, plugins.ErrAccountRequired
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	resp, err := p.do(ctx, "/file/info.cgi", token, map[string]any{"url": rawURL})
@@ -132,7 +142,7 @@ func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo
 		return nil, fmt.Errorf("%s: decode file/info response: %w", pluginName, err)
 	}
 	if body.Status == "KO" {
-		return nil, fmt.Errorf("%s: %s: %w", pluginName, body.Message, plugins.ErrNotFound)
+		return nil, fmt.Errorf("%s: %s: %w", pluginName, body.Message, koErr(body.Message))
 	}
 	if body.Filename == "" {
 		return nil, fmt.Errorf("%s: %w", pluginName, plugins.ErrNotFound)
@@ -143,13 +153,13 @@ func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo
 
 // FetchDownloadURL implements plugins.Hoster via POST
 // /download/get_token.cgi.
-func (p *Plugin) FetchDownloadURL(rawURL string, acc *plugins.Account) (string, error) {
+func (p *Plugin) FetchDownloadURL(ctx context.Context, rawURL string, acc *plugins.Account) (string, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return "", plugins.ErrAccountRequired
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	resp, err := p.do(ctx, "/download/get_token.cgi", token, map[string]any{"url": rawURL})
@@ -171,7 +181,7 @@ func (p *Plugin) FetchDownloadURL(rawURL string, acc *plugins.Account) (string, 
 		return "", fmt.Errorf("%s: decode download/get_token response: %w", pluginName, err)
 	}
 	if body.Status == "KO" {
-		return "", fmt.Errorf("%s: %s: %w", pluginName, body.Message, plugins.ErrUnavailable)
+		return "", fmt.Errorf("%s: %s: %w", pluginName, body.Message, koErr(body.Message))
 	}
 	if body.URL == "" {
 		return "", fmt.Errorf("%s: %w: empty download URL in response", pluginName, plugins.ErrUnavailable)
@@ -256,6 +266,27 @@ func statusErr(code int) error {
 		return plugins.ErrUnavailable
 	default:
 		return fmt.Errorf("%s: unexpected HTTP status %d", pluginName, code)
+	}
+}
+
+// koErr classifies the message of a {"status":"KO"} answer, which
+// 1fichier sends with HTTP 200 for every kind of failure. Only a message
+// that clearly says the file is gone becomes ErrNotFound — that fails the
+// item for good, so an auth or flood error must never land there. Flood
+// messages become ErrRateLimited, everything else the transient
+// ErrUnavailable. The message wording is not verified against the live
+// API, hence the loose matching.
+func koErr(message string) error {
+	m := strings.ToLower(message)
+	switch {
+	case strings.Contains(m, "flood"), strings.Contains(m, "too many"):
+		return plugins.ErrRateLimited
+	case strings.Contains(m, "not found"), strings.Contains(m, "deleted"),
+		strings.Contains(m, "removed"), strings.Contains(m, "does not exist"),
+		strings.Contains(m, "doesn't exist"):
+		return plugins.ErrNotFound
+	default:
+		return plugins.ErrUnavailable
 	}
 }
 

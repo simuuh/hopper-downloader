@@ -127,11 +127,11 @@ type Hoster interface {
 	Match(url string) bool
 	// Resolve looks up metadata for url without downloading it. acc may
 	// be nil for hosters that support anonymous resolution.
-	Resolve(url string, acc *Account) (*FileInfo, error)
+	Resolve(ctx context.Context, url string, acc *Account) (*FileInfo, error)
 	// FetchDownloadURL exchanges url for a direct, time-limited download
 	// URL the downloader can issue Range requests against. acc may be nil
 	// for hosters that support anonymous downloads.
-	FetchDownloadURL(url string, acc *Account) (string, error)
+	FetchDownloadURL(ctx context.Context, url string, acc *Account) (string, error)
 	// Name returns the plugin's human-readable identifier, e.g. "rapidgator".
 	Name() string
 	// Domains returns the hostnames this plugin is responsible for.
@@ -177,7 +177,7 @@ type AccountInfo struct {
 // doesn't implement it reports unknown validity rather than a false
 // positive or negative.
 type AccountValidator interface {
-	ValidateAccount(acc *Account) (*AccountInfo, error)
+	ValidateAccount(ctx context.Context, acc *Account) (*AccountInfo, error)
 }
 
 // ExpandedLink is one real, downloadable link an Expander plugin
@@ -259,7 +259,7 @@ func FilenameFromURL(rawURL string) string {
 // same pattern as Credentialed/DisplayNamer/AccountValidator. A plugin
 // that doesn't implement it is always treated as single-file.
 type Expander interface {
-	Expand(url string) ([]ExpandedLink, error)
+	Expand(ctx context.Context, url string) ([]ExpandedLink, error)
 }
 
 // Registry holds the set of Hoster plugins available to the downloader.

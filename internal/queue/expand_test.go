@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -16,7 +17,7 @@ type expandingHoster struct {
 	expandErr error
 }
 
-func (e *expandingHoster) Expand(string) ([]plugins.ExpandedLink, error) {
+func (e *expandingHoster) Expand(context.Context, string) ([]plugins.ExpandedLink, error) {
 	if e.expandErr != nil {
 		return nil, e.expandErr
 	}

@@ -1,6 +1,7 @@
 package onefichier
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -22,7 +23,7 @@ func TestValidateAccount_Success(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), &fakeTokens{token: "test-token"})
 
-	info, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"api_key": "test-token"}})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"api_key": "test-token"}})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}
@@ -48,7 +49,7 @@ func TestValidateAccount_SuccessWithoutRecognizedExpiryField(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), &fakeTokens{token: "test-token"})
 
-	info, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"api_key": "test-token"}})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"api_key": "test-token"}})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}
@@ -68,7 +69,7 @@ func TestValidateAccount_InvalidToken_HTTPStatus(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}), &fakeTokens{token: "bad-token"})
 
-	info, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"api_key": "bad-token"}})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"api_key": "bad-token"}})
 	if err != nil {
 		t.Fatalf("ValidateAccount returned an error, want a (Valid: false) result: %v", err)
 	}
@@ -87,7 +88,7 @@ func TestValidateAccount_InvalidToken_KOStatus(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), &fakeTokens{token: "bad-token"})
 
-	info, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"api_key": "bad-token"}})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"api_key": "bad-token"}})
 	if err != nil {
 		t.Fatalf("ValidateAccount returned an error, want a (Valid: false) result: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestValidateAccount_InvalidToken_KOStatus(t *testing.T) {
 
 func TestValidateAccount_NoTokenConfigured(t *testing.T) {
 	p := New(&fakeTokens{}, nil)
-	_, err := p.ValidateAccount(nil)
+	_, err := p.ValidateAccount(context.Background(), nil)
 	if err != plugins.ErrAccountRequired {
 		t.Errorf("err = %v, want plugins.ErrAccountRequired", err)
 	}
@@ -112,7 +113,7 @@ func TestValidateAccount_FallsBackToPassword(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), &fakeTokens{password: "webui-token"})
 
-	info, err := p.ValidateAccount(&plugins.Account{Password: "webui-token"})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Password: "webui-token"})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}

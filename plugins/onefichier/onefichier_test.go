@@ -1,6 +1,7 @@
 package onefichier
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -105,7 +106,7 @@ func TestResolve_Success(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), &fakeTokens{token: "test-token"})
 
-	info, err := p.Resolve("https://1fichier.com/?abc123", nil)
+	info, err := p.Resolve(context.Background(), "https://1fichier.com/?abc123", nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestResolve_NotFound(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), &fakeTokens{token: "test-token"})
 
-	_, err := p.Resolve("https://1fichier.com/?abc123", nil)
+	_, err := p.Resolve(context.Background(), "https://1fichier.com/?abc123", nil)
 	if err == nil {
 		t.Fatal("expected an error for a KO status response")
 	}
@@ -132,7 +133,7 @@ func TestResolve_NotFound(t *testing.T) {
 
 func TestResolve_NoAccountConfigured(t *testing.T) {
 	p := New(&fakeTokens{}, nil)
-	_, err := p.Resolve("https://1fichier.com/?abc123", nil)
+	_, err := p.Resolve(context.Background(), "https://1fichier.com/?abc123", nil)
 	if err != plugins.ErrAccountRequired {
 		t.Errorf("err = %v, want plugins.ErrAccountRequired", err)
 	}
@@ -146,7 +147,7 @@ func TestResolve_UsesAccountFromArgumentOverTokenSource(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), &fakeTokens{token: "source-token"})
 
-	_, err := p.Resolve("https://1fichier.com/?x", &plugins.Account{Extra: map[string]string{"api_key": "arg-token"}})
+	_, err := p.Resolve(context.Background(), "https://1fichier.com/?x", &plugins.Account{Extra: map[string]string{"api_key": "arg-token"}})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestFetchDownloadURL_Success(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), &fakeTokens{token: "test-token"})
 
-	got, err := p.FetchDownloadURL("https://1fichier.com/?abc123", nil)
+	got, err := p.FetchDownloadURL(context.Background(), "https://1fichier.com/?abc123", nil)
 	if err != nil {
 		t.Fatalf("FetchDownloadURL: %v", err)
 	}
@@ -185,7 +186,7 @@ func TestFetchDownloadURL_KOStatus(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), &fakeTokens{token: "test-token"})
 
-	_, err := p.FetchDownloadURL("https://1fichier.com/?abc123", nil)
+	_, err := p.FetchDownloadURL(context.Background(), "https://1fichier.com/?abc123", nil)
 	if err == nil {
 		t.Fatal("expected an error for a KO status response")
 	}
@@ -197,7 +198,7 @@ func TestFetchDownloadURL_BadToken(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), &fakeTokens{token: "test-token"})
 
-	_, err := p.FetchDownloadURL("https://1fichier.com/?abc123", nil)
+	_, err := p.FetchDownloadURL(context.Background(), "https://1fichier.com/?abc123", nil)
 	if err != plugins.ErrAccountRequired {
 		t.Errorf("err = %v, want plugins.ErrAccountRequired", err)
 	}

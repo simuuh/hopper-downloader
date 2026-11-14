@@ -154,12 +154,12 @@ func (p *Plugin) fetchHosts(token string) (multihost.Hosts, error) {
 }
 
 // Resolve implements plugins.Hoster via POST /v4/link/infos.
-func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (p *Plugin) Resolve(ctx context.Context, rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return nil, plugins.ErrAccountRequired
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	var data struct {
 		Infos []struct {
@@ -184,12 +184,12 @@ func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo
 // FetchDownloadURL implements plugins.Hoster via POST /v4/link/unlock. A
 // "delayed" answer (the link is still being generated) is polled via
 // /v4/link/delayed for up to delayedMaxWait.
-func (p *Plugin) FetchDownloadURL(rawURL string, acc *plugins.Account) (string, error) {
+func (p *Plugin) FetchDownloadURL(ctx context.Context, rawURL string, acc *plugins.Account) (string, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return "", plugins.ErrAccountRequired
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout+delayedMaxWait)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout+delayedMaxWait)
 	defer cancel()
 	var data struct {
 		Link    string `json:"link"`
@@ -237,12 +237,12 @@ func (p *Plugin) waitDelayed(ctx context.Context, token string, id int64) (strin
 }
 
 // ValidateAccount implements plugins.AccountValidator via GET /v4/user.
-func (p *Plugin) ValidateAccount(acc *plugins.Account) (*plugins.AccountInfo, error) {
+func (p *Plugin) ValidateAccount(ctx context.Context, acc *plugins.Account) (*plugins.AccountInfo, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return nil, plugins.ErrAccountRequired
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	var data struct {
 		User struct {

@@ -29,10 +29,10 @@ func (f *fakeHoster) Match(url string) bool {
 	}
 	return false
 }
-func (f *fakeHoster) Resolve(url string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (f *fakeHoster) Resolve(_ context.Context, url string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	return nil, nil
 }
-func (f *fakeHoster) FetchDownloadURL(url string, acc *plugins.Account) (string, error) {
+func (f *fakeHoster) FetchDownloadURL(_ context.Context, url string, acc *plugins.Account) (string, error) {
 	return "", nil
 }
 
@@ -163,10 +163,10 @@ type passthroughHoster struct{ name string }
 func (h *passthroughHoster) Name() string      { return h.name }
 func (h *passthroughHoster) Domains() []string { return nil }
 func (h *passthroughHoster) Match(string) bool { return true }
-func (h *passthroughHoster) Resolve(url string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (h *passthroughHoster) Resolve(_ context.Context, url string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	return &plugins.FileInfo{Name: "f", Available: true}, nil
 }
-func (h *passthroughHoster) FetchDownloadURL(url string, acc *plugins.Account) (string, error) {
+func (h *passthroughHoster) FetchDownloadURL(_ context.Context, url string, acc *plugins.Account) (string, error) {
 	return url, nil
 }
 
@@ -224,10 +224,10 @@ type accountRequiredHoster struct{ name string }
 func (h *accountRequiredHoster) Name() string      { return h.name }
 func (h *accountRequiredHoster) Domains() []string { return nil }
 func (h *accountRequiredHoster) Match(string) bool { return true }
-func (h *accountRequiredHoster) Resolve(url string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (h *accountRequiredHoster) Resolve(_ context.Context, url string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	return nil, plugins.ErrAccountRequired
 }
-func (h *accountRequiredHoster) FetchDownloadURL(url string, acc *plugins.Account) (string, error) {
+func (h *accountRequiredHoster) FetchDownloadURL(_ context.Context, url string, acc *plugins.Account) (string, error) {
 	return "", plugins.ErrAccountRequired
 }
 

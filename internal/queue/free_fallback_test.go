@@ -34,10 +34,10 @@ type freeFallbackHoster struct {
 func (h *freeFallbackHoster) Name() string      { return h.name }
 func (h *freeFallbackHoster) Domains() []string { return nil }
 func (h *freeFallbackHoster) Match(string) bool { return true }
-func (h *freeFallbackHoster) Resolve(url string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (h *freeFallbackHoster) Resolve(_ context.Context, url string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	return &plugins.FileInfo{Name: "f", Available: true}, nil
 }
-func (h *freeFallbackHoster) FetchDownloadURL(url string, acc *plugins.Account) (string, error) {
+func (h *freeFallbackHoster) FetchDownloadURL(_ context.Context, url string, acc *plugins.Account) (string, error) {
 	return "", plugins.ErrAccountRequired
 }
 func (h *freeFallbackHoster) FetchFreeDownloadURL(ctx context.Context, url string, acc *plugins.Account) (string, error) {

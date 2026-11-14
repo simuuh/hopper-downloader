@@ -238,8 +238,8 @@ Hosters are compiled in (`plugins.Hoster`), not loaded with
 ```go
 type Hoster interface {
     Match(url string) bool
-    Resolve(url string, acc *Account) (*FileInfo, error)
-    FetchDownloadURL(url string, acc *Account) (string, error)
+    Resolve(ctx context.Context, url string, acc *Account) (*FileInfo, error)
+    FetchDownloadURL(ctx context.Context, url string, acc *Account) (string, error)
     Name() string
     Domains() []string
 }
@@ -284,7 +284,7 @@ AllDebrid's "delayed" links are polled every 5 s for up to 2 min.
 | --- | --- | --- |
 | realdebrid | endpoints, auth, `/hosts/status`, free-account `/user` shape | error code 9 = traffic exhausted |
 | rapidgator | — (v2 API paths/params agree across several community clients, not checked against the live API) | everything, notably `premium_end_time` type, free-tier `/file/download` POST shape, "Session doesn't exist" wording |
-| onefichier | base URL, auth header, `file/info`, `download/get_token` | `user/info` response (premium-expiry field name), free-tier `delay` |
+| onefichier | base URL, auth header, `file/info`, `download/get_token` | `user/info` response (premium-expiry field name), free-tier `delay`, wording of `KO` messages (not found vs. flood) |
 | katfile | full API incl. two-key auth, error envelope (errors use HTTP 200), date format | free-download flow end to end (not implemented) |
 | ddownload | full API endpoint list; no download endpoint exists | `status: 451` meaning |
 | hidecx | container + link JSON API, required headers | other `access_status` values |
@@ -394,8 +394,15 @@ extraction gets `409` instead of a second `unrar` on the same files.
 
 ## Accounts
 
-Credentials are AES-256-GCM encrypted at rest (`accounts.encryption_key`,
-32 bytes). Validation results (valid, expiry, traffic, label) are cached
+Credentials are AES-256-GCM encrypted at rest. The key is derived from
+`accounts.encryption_key` (32 bytes) with HKDF-SHA256, and each
+ciphertext is bound to its record's id and hoster key as associated
+data, so a secret copied into another record doesn't decrypt. Records
+carry a `cipher_version`; on startup every record is decrypted once,
+records from before versioning are re-sealed (an older Hopper can't
+read them afterwards), and records the key can't open are logged as an
+error — a changed key would otherwise only show as plugins finding no
+account. Validation results (valid, expiry, traffic, label) are cached
 next to them; list endpoints never call the hoster. Validation runs on
 add (best effort), on "Re-check", on credential update
 (`PUT /accounts/{id}`) and every 12 h in the background. A confirmed

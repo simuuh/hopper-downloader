@@ -1,6 +1,7 @@
 package premiumize
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -84,11 +85,11 @@ func TestResolveThenFetch_ShareOneDirectDLCall(t *testing.T) {
 		},
 	})
 	acc := &plugins.Account{Password: testKey}
-	info, err := p.Resolve("https://rapidgator.net/file/abc", acc)
+	info, err := p.Resolve(context.Background(), "https://rapidgator.net/file/abc", acc)
 	if err != nil || info.Name != "movie.part1.rar" || info.Size != 2048 {
 		t.Fatalf("Resolve = %+v, %v", info, err)
 	}
-	got, err := p.FetchDownloadURL("https://rapidgator.net/file/abc", acc)
+	got, err := p.FetchDownloadURL(context.Background(), "https://rapidgator.net/file/abc", acc)
 	if err != nil || got != "https://dl.premiumize.example/f" || calls.Load() != 1 {
 		t.Fatalf("FetchDownloadURL = %q, %v (%d calls)", got, err, calls.Load())
 	}
@@ -98,7 +99,7 @@ func TestDirectDL_FolderRejected(t *testing.T) {
 	p := fakeAPI(t, map[string]func(http.ResponseWriter, *http.Request){
 		"/transfer/directdl": reply(`{"status":"success","content":[{"path":"a","link":"x"},{"path":"b","link":"y"}]}`),
 	})
-	if _, err := p.FetchDownloadURL("https://host.example/folder", &plugins.Account{Password: testKey}); err == nil {
+	if _, err := p.FetchDownloadURL(context.Background(), "https://host.example/folder", &plugins.Account{Password: testKey}); err == nil {
 		t.Error("folder with two files accepted")
 	}
 }
@@ -116,12 +117,12 @@ func TestErrorMapping(t *testing.T) {
 		p := fakeAPI(t, map[string]func(http.ResponseWriter, *http.Request){
 			"/transfer/directdl": reply(`{"status":"error","message":"m","code":"` + code + `"}`),
 		})
-		if _, err := p.FetchDownloadURL("https://host.example/x", &plugins.Account{Password: testKey}); !errors.Is(err, want) {
+		if _, err := p.FetchDownloadURL(context.Background(), "https://host.example/x", &plugins.Account{Password: testKey}); !errors.Is(err, want) {
 			t.Errorf("%s: err = %v, want %v", code, err, want)
 		}
 	}
 	p := fakeAPI(t, nil)
-	if _, err := p.FetchDownloadURL("https://host.example/x", &plugins.Account{Password: "wrong"}); !errors.Is(err, plugins.ErrAccountRequired) {
+	if _, err := p.FetchDownloadURL(context.Background(), "https://host.example/x", &plugins.Account{Password: "wrong"}); !errors.Is(err, plugins.ErrAccountRequired) {
 		t.Errorf("bad key: err = %v", err)
 	}
 }
@@ -132,7 +133,7 @@ func TestValidateAccount(t *testing.T) {
 		"/account/info":  reply(`{"status":"success","customer_id":"1","premium_until":` + strconv.FormatInt(until.Unix(), 10) + `,"limit_used":0.25,"booster_points":0}`),
 		"/services/list": reply(servicesList),
 	})
-	info, err := p.ValidateAccount(&plugins.Account{Password: testKey})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Password: testKey})
 	if err != nil || !info.Valid || info.ExpiresAt == nil || !info.ExpiresAt.Equal(until) || info.TrafficLeft != nil {
 		t.Fatalf("ValidateAccount = %+v, %v", info, err)
 	}
@@ -142,7 +143,7 @@ func TestValidateAccount(t *testing.T) {
 	if !p.Match("https://rapidgator.net/file/abc") {
 		t.Error("host list not warmed")
 	}
-	info, err = p.ValidateAccount(&plugins.Account{Password: "wrong"})
+	info, err = p.ValidateAccount(context.Background(), &plugins.Account{Password: "wrong"})
 	if err != nil || info.Valid {
 		t.Errorf("bad key: %+v, %v", info, err)
 	}
@@ -153,7 +154,7 @@ func TestValidateAccount_FreeAndFairUseExhausted(t *testing.T) {
 		"/account/info":  reply(`{"status":"success","premium_until":null,"limit_used":0}`),
 		"/services/list": reply(servicesList),
 	})
-	if info, err := p.ValidateAccount(&plugins.Account{Password: testKey}); err != nil || info.Label != "Free account (no premium)" || info.ExpiresAt != nil {
+	if info, err := p.ValidateAccount(context.Background(), &plugins.Account{Password: testKey}); err != nil || info.Label != "Free account (no premium)" || info.ExpiresAt != nil {
 		t.Errorf("free: %+v, %v", info, err)
 	}
 
@@ -161,7 +162,7 @@ func TestValidateAccount_FreeAndFairUseExhausted(t *testing.T) {
 		"/account/info":  reply(`{"status":"success","premium_until":4102444800,"limit_used":1}`),
 		"/services/list": reply(servicesList),
 	})
-	info, err := p.ValidateAccount(&plugins.Account{Password: testKey})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Password: testKey})
 	if err != nil || info.TrafficLeft == nil || *info.TrafficLeft != 0 {
 		t.Errorf("fair use exhausted: %+v, %v — want TrafficLeft 0", info, err)
 	}

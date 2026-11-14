@@ -22,11 +22,11 @@ type debridFake struct {
 	fetches int
 }
 
-func (d *debridFake) Resolve(string, *plugins.Account) (*plugins.FileInfo, error) {
+func (d *debridFake) Resolve(context.Context, string, *plugins.Account) (*plugins.FileInfo, error) {
 	return &plugins.FileInfo{Name: "file.bin", Available: true}, nil
 }
 
-func (d *debridFake) FetchDownloadURL(string, *plugins.Account) (string, error) {
+func (d *debridFake) FetchDownloadURL(context.Context, string, *plugins.Account) (string, error) {
 	d.mu.Lock()
 	d.fetches++
 	d.mu.Unlock()
