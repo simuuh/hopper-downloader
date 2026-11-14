@@ -137,7 +137,7 @@ func New(cfg Config) *Engine {
 		// per-chunk stall watchdog (StallTimeout) instead.
 		transport := http.DefaultTransport.(*http.Transport).Clone()
 		transport.ResponseHeaderTimeout = 30 * time.Second
-		client = &http.Client{Transport: transport}
+		client = &http.Client{Transport: transport, CheckRedirect: checkRedirect}
 	}
 	chunks := cfg.DefaultParallelChunks
 	if chunks < 1 {
