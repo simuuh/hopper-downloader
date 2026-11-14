@@ -63,8 +63,10 @@ func fakeUnrarMain() int {
 
 	want := os.Getenv("HOPPER_FAKE_UNRAR_PASSWORD")
 	if want != "" && gotPassword != want {
-		fmt.Fprintln(os.Stderr, "CRC failed in encrypted file. Corrupt file or wrong password.")
-		return 1
+		// unrar 6.21's exact output and exit code for a wrong -p password.
+		fmt.Fprintln(os.Stderr, "Incorrect password for archive.rar")
+		fmt.Fprintln(os.Stderr, "Total errors: 1")
+		return 11
 	}
 
 	if err := os.MkdirAll(destDir, 0o750); err != nil {
@@ -167,5 +169,28 @@ func TestExtractRAR_RealErrorAbortsWithoutTryingEveryPassword(t *testing.T) {
 	}
 	if got := len(data); got != 1 {
 		t.Errorf("unrar invoked %d times, want 1 (a real error must abort immediately, not retry every password)", got)
+	}
+}
+
+func TestIsWrongPasswordErr(t *testing.T) {
+	cases := []struct {
+		out  string
+		want bool
+	}{
+		// unrar 6.21, -hp archive, wrong -p password
+		{"Incorrect password for archive.rar\nTotal errors: 1", true},
+		// unrar 6.21, -p archive (file data only), wrong -p password
+		{"Extracting from archive.rar\nIncorrect password for f.txt\nTotal errors: 1", true},
+		// unrar 6.21, wrong password read from stdin
+		{"Enter password (will not be echoed) for archive.rar: \nThe specified password is incorrect.\nProgram aborted", true},
+		// older unrar versions
+		{"CRC failed in encrypted file. Corrupt file or wrong password.", true},
+		{"disk full", false},
+		{"Cannot open archive.rar", false},
+	}
+	for _, tc := range cases {
+		if got := isWrongPasswordErr(fmt.Errorf("extract: unrar: exit status 11: %s", tc.out)); got != tc.want {
+			t.Errorf("isWrongPasswordErr(%q) = %v, want %v", tc.out, got, tc.want)
+		}
 	}
 }

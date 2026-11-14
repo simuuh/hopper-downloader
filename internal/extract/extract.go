@@ -460,13 +460,20 @@ func (t *tailBuffer) String() string {
 
 // isWrongPasswordErr heuristically recognizes unrar's wrong-password
 // output. unrar has no single stable exit code for this across versions
-// (a bad password typically surfaces as a checksum/CRC error, the same
-// symptom a corrupt archive produces), so this is a best-effort text
+// (older versions report a bad password as a checksum/CRC error, the
+// same symptom a corrupt archive produces; unrar 6 says "Incorrect
+// password" and exits 11), so this is a best-effort text
 // match, not a guarantee — worst case, a genuinely corrupt archive gets
 // (harmlessly) retried against a few more passwords before failing.
 func isWrongPasswordErr(err error) bool {
 	msg := strings.ToLower(err.Error())
-	for _, marker := range []string{"wrong password", "password incorrect", "encrypted", "checksum error", "crc failed"} {
+	for _, marker := range []string{
+		"wrong password", "password incorrect", "encrypted", "checksum error", "crc failed",
+		// unrar 6+: "Incorrect password for <name>" after -p, and "The
+		// specified password is incorrect." after a password read from
+		// stdin (checked against unrar 6.21).
+		"incorrect password", "password is incorrect",
+	} {
 		if strings.Contains(msg, marker) {
 			return true
 		}
