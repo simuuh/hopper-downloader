@@ -140,3 +140,125 @@ func TestLaunchdPlist_EscapesPaths(t *testing.T) {
 		t.Fatalf("escaped path missing:\n%s", plist)
 	}
 }
+
+func TestInstallBinary_CopiesIntoInstallDir(t *testing.T) {
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "downloaded-hopperctl")
+	if err := os.WriteFile(src, []byte("binary v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "Hopper")
+
+	got, err := installBinary(src, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, installedBinaryName); got != want {
+		t.Fatalf("installBinary returned %q, want %q", got, want)
+	}
+	data, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "binary v1" {
+		t.Fatalf("installed copy holds %q", data)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("install dir holds %d entries, want only the binary (temp file left behind?)", len(entries))
+	}
+}
+
+func TestInstallBinary_ReplacesOlderCopy(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "hopperctl-new")
+	if err := os.WriteFile(src, []byte("binary v2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, installedBinaryName), []byte("binary v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := installBinary(src, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "binary v2" {
+		t.Fatalf("installed copy holds %q, want the new binary", data)
+	}
+}
+
+// Re-running install from the installed copy must not try to copy the
+// file onto itself.
+func TestInstallBinary_AlreadyInstalledIsKept(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, installedBinaryName)
+	if err := os.WriteFile(dst, []byte("binary v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := installBinary(dst, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != dst {
+		t.Fatalf("installBinary returned %q, want %q", got, dst)
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "binary v1" {
+		t.Fatalf("installed copy changed to %q", data)
+	}
+}
+
+func TestRemoveInstalledBinary(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "Hopper")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, installedBinaryName), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeInstalledBinary(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("empty install dir still exists (err=%v)", err)
+	}
+	// Second call: nothing left to remove, still not an error.
+	if err := removeInstalledBinary(dir); err != nil {
+		t.Fatalf("missing binary reported as error: %v", err)
+	}
+}
+
+func TestWindowsInstallDir_UsesProgramFiles(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("ProgramFiles", root)
+	if got, want := windowsInstallDir(), filepath.Join(root, "Hopper"); got != want {
+		t.Fatalf("windowsInstallDir() = %q, want %q", got, want)
+	}
+}
+
+func TestSamePath(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "hopperctl.exe")
+	if !samePath(a, filepath.Join(dir, ".", "hopperctl.exe")) {
+		t.Fatal("cleaned paths not treated as equal")
+	}
+	if samePath(a, filepath.Join(dir, "other.exe")) {
+		t.Fatal("different files treated as equal")
+	}
+	if runtime.GOOS == "windows" && !samePath(a, strings.ToUpper(a)) {
+		t.Fatal("Windows paths compared case-sensitively")
+	}
+}
