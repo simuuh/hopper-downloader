@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -336,8 +337,19 @@ func uninstallDarwin() error {
 // LocalSystem by default, a different account from whoever is running
 // `service install` right now, so a config or log path resolved via the
 // normal interactive-user %APPDATA% would be invisible to it.
+//
+// The service runs exe as LocalSystem, so exe must not be writable by
+// an unprivileged user: whoever can replace it gets SYSTEM. The binary
+// is therefore copied to %ProgramFiles%\Hopper first (writable only by
+// administrators, which `sc create` requires anyway) and the service
+// points at that copy, never at the downloaded file in the user's
+// profile.
 func installWindows(exe string) (string, error) {
-	binPathValue := fmt.Sprintf(`"%s" run`, exe)
+	installed, err := installBinary(exe, windowsInstallDir())
+	if err != nil {
+		return "", err
+	}
+	binPathValue := fmt.Sprintf(`"%s" run`, installed)
 	if err := runQuiet("sc", "create", windowsServiceName, "binPath=", binPathValue, "start=", "auto"); err != nil {
 		return "", fmt.Errorf("`sc create` failed: %w", err)
 	}
@@ -350,19 +362,21 @@ func installWindows(exe string) (string, error) {
 		warnings = fmt.Sprintf("\nwarning: `sc start %s` failed (it will still start at next boot, start type auto): %v", windowsServiceName, err)
 	}
 
-	return fmt.Sprintf(`registered Windows Service: %s (start type: auto, visible in services.msc)
+	return fmt.Sprintf(`installed binary: %s
+registered Windows Service: %s (start type: auto, visible in services.msc)
 
 Check status:   sc query %s
 Stop:           sc stop %s
 Uninstall:      hopperctl service uninstall
 Logs:           %%ProgramData%%\hopper\hopperctl.log
 
-Runs with no console window — closing any terminal does not stop it.%s`, windowsServiceName, windowsServiceName, windowsServiceName, warnings), nil
+Runs with no console window — closing any terminal does not stop it.%s`, installed, windowsServiceName, windowsServiceName, windowsServiceName, warnings), nil
 }
 
 // uninstallWindows stops and deletes the registered Windows Service via
-// sc.exe, and removes the %ProgramData% config copy installWindows (via
-// writeServiceConfigs) wrote for it — see removeServiceConfig. The
+// sc.exe, removes the binary copy installWindows placed in
+// %ProgramFiles%\Hopper and the %ProgramData% config copy it wrote via
+// writeServiceConfigs — see removeServiceConfig. The
 // interactive user's own %APPDATA%\hopper\hopperctl.yaml is left alone,
 // same as every other platform's uninstall: the config is kept in case
 // hopperctl is still used interactively (proxy/watch/status) after
@@ -375,7 +389,88 @@ func uninstallWindows() error {
 	if err := removeServiceConfig(); err != nil {
 		return err
 	}
+	if err := removeInstalledBinary(windowsInstallDir()); err != nil {
+		// Not fatal: the service is already gone. The usual cause is
+		// running uninstall from the installed copy itself, or the
+		// stopped service not having released the file yet.
+		fmt.Printf("warning: %v — delete it by hand\n", err)
+	}
 	return nil
+}
+
+// windowsInstallDir returns %ProgramFiles%\Hopper, where installWindows
+// places the binary the service runs.
+func windowsInstallDir() string {
+	root := os.Getenv("ProgramFiles")
+	if root == "" {
+		root = `C:\Program Files` // set on every supported Windows version; defensive fallback only
+	}
+	return filepath.Join(root, "Hopper")
+}
+
+// installedBinaryName is the file name of the copy installBinary places
+// in the install directory.
+const installedBinaryName = "hopperctl.exe"
+
+// installBinary copies src to dir/hopperctl.exe and returns that path.
+// When src already is that file (re-running install from the installed
+// copy) nothing is copied. The copy goes through a temporary file in
+// dir and a rename, so a failed copy never leaves a truncated binary
+// behind. dir is created with the parent's inherited permissions, which
+// for %ProgramFiles% means administrators only.
+func installBinary(src, dir string) (string, error) {
+	dst := filepath.Join(dir, installedBinaryName)
+	if samePath(src, dst) {
+		return dst, nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: the binary must stay readable/executable by the service account; write access comes from the inherited %ProgramFiles% ACL
+		return "", fmt.Errorf("create %s: %w", dir, err)
+	}
+	in, err := os.Open(src) //nolint:gosec // G304: src is this process's own executable
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", src, err)
+	}
+	defer func() { _ = in.Close() }()
+
+	tmp, err := os.CreateTemp(dir, ".hopperctl-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("copy binary to %s: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
+
+	if _, err := io.Copy(tmp, in); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("copy binary to %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("copy binary to %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		return "", fmt.Errorf("replace %s (is the service still running? run `hopperctl service uninstall` first): %w", dst, err)
+	}
+	return dst, nil
+}
+
+// removeInstalledBinary deletes the copy installBinary placed in dir and
+// dir itself when that leaves it empty. A missing file is not an error.
+func removeInstalledBinary(dir string) error {
+	dst := filepath.Join(dir, installedBinaryName)
+	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove %s: %w", dst, err)
+	}
+	_ = os.Remove(dir) // fails harmlessly while other files remain
+	return nil
+}
+
+// samePath reports whether a and b name the same file. Windows paths
+// are case-insensitive, so the comparison folds case there.
+func samePath(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // runQuiet runs an external service-manager command, discarding its

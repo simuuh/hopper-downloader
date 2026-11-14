@@ -477,7 +477,9 @@ A valid re-check, a credential update or re-enabling ends the cooldown.
   Windows Service (`sc.exe`, `golang.org/x/sys/windows/svc`). The
   Windows service runs as LocalSystem, so its config and logs live in
   `%ProgramData%\hopper\`; install writes the config there and to the
-  user's `%APPDATA%\hopper\`.
+  user's `%APPDATA%\hopper\`. Install copies the binary to
+  `%ProgramFiles%\Hopper\` and registers that copy: a LocalSystem
+  service must not run a file the user can replace (e.g. in Downloads).
 
 ## Browser extension
 
