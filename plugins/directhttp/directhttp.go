@@ -45,11 +45,14 @@ func New() *Plugin {
 	return &Plugin{
 		client: &http.Client{
 			Timeout: 30 * time.Second,
-			// Never auto-follow to a different scheme/host silently past
-			// what net/http already restricts; explicit is fine here.
+			// At most 10 hops, and never from https down to http: the
+			// URL may carry a token that must not travel unencrypted.
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return fmt.Errorf("%s: too many redirects", pluginName)
+				}
+				if via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https" {
+					return fmt.Errorf("%s: refusing redirect from https to http", pluginName)
 				}
 				return nil
 			},

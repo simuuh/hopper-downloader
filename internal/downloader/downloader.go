@@ -125,7 +125,15 @@ type Engine struct {
 	mu             sync.Mutex
 	hosterLimiters map[string]*rate.Limiter
 	hosterGates    map[string]*rate.Limiter
+
+	// freeSpace reports the bytes available in a directory; a field so
+	// tests can simulate a full disk.
+	freeSpace func(dir string) (uint64, error)
 }
+
+// ErrInsufficientSpace is returned when the reported file size exceeds
+// the free space of the download directory.
+var ErrInsufficientSpace = errors.New("not enough free disk space")
 
 // New builds an Engine from Config, applying sane defaults for any zero
 // value.
@@ -137,7 +145,7 @@ func New(cfg Config) *Engine {
 		// per-chunk stall watchdog (StallTimeout) instead.
 		transport := http.DefaultTransport.(*http.Transport).Clone()
 		transport.ResponseHeaderTimeout = 30 * time.Second
-		client = &http.Client{Transport: transport}
+		client = &http.Client{Transport: transport, CheckRedirect: checkRedirect}
 	}
 	chunks := cfg.DefaultParallelChunks
 	if chunks < 1 {
@@ -164,6 +172,7 @@ func New(cfg Config) *Engine {
 		hosterMinInterval: cfg.HosterMinRequestInterval,
 		hosterLimiters:    make(map[string]*rate.Limiter),
 		hosterGates:       make(map[string]*rate.Limiter),
+		freeSpace:         freeBytes,
 	}
 	e.baseDir.Store(&cfg.BaseDir)
 	e.defaultChunks.Store(int64(chunks))
@@ -328,6 +337,10 @@ func (e *Engine) transfer(ctx context.Context, req Request, dest string) (*Resul
 			st.Validator = remote.validator
 		}
 	}
+	if err := e.checkSpace(filepath.Dir(dest), tmp, size, resumed); err != nil {
+		return nil, err
+	}
+
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("downloader: open temp file: %w", err)
@@ -408,4 +421,34 @@ func (e *Engine) DiscardPartial(relPath string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// checkSpace fails a transfer of size bytes up front when the download
+// directory can't hold it, instead of running into a full disk halfway.
+// A size of unknown origin is not trusted blindly either: a server
+// claiming a huge Content-Length would otherwise get its file
+// preallocated with zeros up to that length. A resumed transfer only
+// needs what its .part doesn't occupy yet. An unknown size, or a file
+// system that can't report its free space, skips the check.
+func (e *Engine) checkSpace(dir, tmp string, size int64, resumed bool) error {
+	if size <= 0 {
+		return nil
+	}
+	need := size
+	if resumed {
+		if info, err := os.Stat(tmp); err == nil {
+			need -= info.Size()
+		}
+	}
+	if need <= 0 {
+		return nil
+	}
+	free, err := e.freeSpace(dir)
+	if err != nil {
+		return nil //nolint:nilerr // no free-space figure: download as before rather than refuse
+	}
+	if uint64(need) > free {
+		return fmt.Errorf("downloader: %w: file needs %d more bytes, %d free in %s", ErrInsufficientSpace, need, free, dir)
+	}
+	return nil
 }

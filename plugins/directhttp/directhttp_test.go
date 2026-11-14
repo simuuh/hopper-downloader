@@ -172,3 +172,24 @@ func TestResolve_TooManyRedirects(t *testing.T) {
 		t.Fatal("expected an error for a redirect loop")
 	}
 }
+
+func TestResolve_RefusesHTTPSToHTTPRedirect(t *testing.T) {
+	plainHits := 0
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plainHits++
+	}))
+	t.Cleanup(plain.Close)
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+"/file.bin", http.StatusFound)
+	}))
+	t.Cleanup(secure.Close)
+
+	p := New()
+	p.client.Transport = secure.Client().Transport // trust the test certificate
+	if _, err := p.Resolve(context.Background(), secure.URL+"/file.bin?token=x", nil); err == nil {
+		t.Fatal("Resolve followed a downgrade redirect")
+	}
+	if plainHits != 0 {
+		t.Fatalf("plain-http server contacted %d times", plainHits)
+	}
+}
