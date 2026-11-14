@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -29,12 +30,18 @@ func TestMain(m *testing.M) {
 // HOPPER_FAKE_UNRAR_PASSWORD env var (the "correct" password for this
 // run; "" means the archive isn't encrypted and any/no password works).
 func fakeUnrarMain() int {
+	if argsFile := os.Getenv("HOPPER_FAKE_UNRAR_ARGS_FILE"); argsFile != "" {
+		_ = os.WriteFile(argsFile, []byte(strings.Join(os.Args[1:], "\n")), 0o600)
+	}
+
 	var gotPassword string
+	sawP := false
 	var positional []string
 	for _, a := range os.Args[1:] {
 		switch {
 		case a == "x" || a == "-o+" || a == "-y":
 		case strings.HasPrefix(a, "-p"):
+			sawP = true
 			gotPassword = strings.TrimPrefix(a, "-p")
 			if gotPassword == "-" {
 				gotPassword = ""
@@ -62,6 +69,20 @@ func fakeUnrarMain() int {
 	}
 
 	want := os.Getenv("HOPPER_FAKE_UNRAR_PASSWORD")
+	if want != "" && !sawP {
+		// No -p: like unrar 6.21, prompt and read one line from stdin;
+		// a wrong password prompts again, which hits EOF and aborts.
+		fmt.Fprint(os.Stderr, "Enter password (will not be echoed) for archive.rar: ")
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil || strings.TrimSuffix(line, "\n") != want {
+			if err == nil {
+				fmt.Fprintln(os.Stderr, "\nThe specified password is incorrect.")
+			}
+			fmt.Fprintln(os.Stderr, "Program aborted")
+			return 255
+		}
+		gotPassword = want
+	}
 	if want != "" && gotPassword != want {
 		// unrar 6.21's exact output and exit code for a wrong -p password.
 		fmt.Fprintln(os.Stderr, "Incorrect password for archive.rar")
@@ -192,5 +213,56 @@ func TestIsWrongPasswordErr(t *testing.T) {
 		if got := isWrongPasswordErr(fmt.Errorf("extract: unrar: exit status 11: %s", tc.out)); got != tc.want {
 			t.Errorf("isWrongPasswordErr(%q) = %v, want %v", tc.out, got, tc.want)
 		}
+	}
+}
+
+// The password must never appear on unrar's command line when it goes
+// through stdin; both modes have to extract with the right password and
+// walk the candidate list on a wrong one.
+func TestExtractRAR_PasswordTransport(t *testing.T) {
+	for _, viaStdin := range []bool{true, false} {
+		t.Run(fmt.Sprintf("viaStdin=%v", viaStdin), func(t *testing.T) {
+			old := passwordViaStdin
+			passwordViaStdin = viaStdin
+			t.Cleanup(func() { passwordViaStdin = old })
+
+			const pw = "placeholder pw \"q\""
+			e := withFakeUnrar(t, pw)
+			argsFile := filepath.Join(t.TempDir(), "args")
+			t.Setenv("HOPPER_FAKE_UNRAR_ARGS_FILE", argsFile)
+			dir := t.TempDir()
+
+			res, err := e.Extract(context.Background(), filepath.Join(dir, "archive.rar"), filepath.Join(dir, "out"), "wrong-first", []string{pw})
+			if err != nil {
+				t.Fatalf("Extract: %v", err)
+			}
+			if res.PasswordUsed != pw {
+				t.Fatalf("PasswordUsed = %q", res.PasswordUsed)
+			}
+			args, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if inArgs := strings.Contains(string(args), pw); inArgs == viaStdin {
+				t.Fatalf("password on the command line = %v, want %v (args: %q)", inArgs, !viaStdin, args)
+			}
+		})
+	}
+}
+
+func TestExtractRAR_EmptyPasswordStillPassesNoPromptSwitch(t *testing.T) {
+	e := withFakeUnrar(t, "")
+	argsFile := filepath.Join(t.TempDir(), "args")
+	t.Setenv("HOPPER_FAKE_UNRAR_ARGS_FILE", argsFile)
+	dir := t.TempDir()
+	if _, err := e.Extract(context.Background(), filepath.Join(dir, "archive.rar"), filepath.Join(dir, "out"), "", nil); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "-p-") {
+		t.Fatalf("no -p- for an unencrypted attempt: %q", args)
 	}
 }

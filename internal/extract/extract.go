@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -360,6 +361,17 @@ func (e *Extractor) extractRAR(ctx context.Context, srcPath, destDir string, pas
 	return nil, fmt.Errorf("%w (tried %d candidate password(s)): %w", ErrAllPasswordsFailed, len(passwords), lastErr)
 }
 
+// passwordViaStdin selects how runUnrar hands unrar an archive
+// password. On Unix a process's command line is readable by every local
+// user (ps, /proc/<pid>/cmdline), so "-p<password>" would expose it;
+// unrar reads the password from stdin instead (checked against unrar
+// 6.21, including spaces, quotes and non-ASCII under a UTF-8 locale).
+// The RAR environment variable is no alternative: unrar splits it at
+// spaces and quotes. On Windows other users can't read a process's
+// command line without administrator rights, and whether unrar.exe reads
+// a redirected stdin is unverified, so -p stays.
+var passwordViaStdin = runtime.GOOS != "windows"
+
 func (e *Extractor) runUnrar(ctx context.Context, srcPath, destDir, password string) ([]string, error) {
 	unrarPath := e.UnrarPath
 	if unrarPath == "" {
@@ -378,13 +390,19 @@ func (e *Extractor) runUnrar(ctx context.Context, srcPath, destDir, password str
 	}
 
 	args := []string{"x", "-o+", "-y"}
-	if password != "" {
-		args = append(args, "-p"+password)
-	} else {
+	var stdin io.Reader
+	switch {
+	case password == "":
 		// -p- means "never prompt for a password" — without it, unrar
-		// blocks waiting on stdin for an encrypted archive with no -p
-		// given, hanging this call indefinitely.
+		// would wait for one on stdin for an encrypted archive.
 		args = append(args, "-p-")
+	case passwordViaStdin:
+		// Without -p, unrar asks for the password and reads it from
+		// stdin. A wrong one makes it ask again; stdin is at EOF by then,
+		// so it aborts (exit 255) instead of blocking.
+		stdin = strings.NewReader(password + "\n")
+	default:
+		args = append(args, "-p"+password)
 	}
 	args = append(args, srcPath, destDir+string(os.PathSeparator))
 
@@ -392,7 +410,7 @@ func (e *Extractor) runUnrar(ctx context.Context, srcPath, destDir, password str
 	out := &tailBuffer{max: maxUnrarOutput}
 	cmd.Stdout = out
 	cmd.Stderr = out
-	cmd.Stdin = nil // never attached; -p- above is the real guard against a blocking password prompt
+	cmd.Stdin = stdin // nil (the null device) unless the password goes this way
 
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("extract: unrar: %w: %s", err, strings.TrimSpace(out.String()))
