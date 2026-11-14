@@ -797,7 +797,7 @@ func (m *Manager) run(it *Item, h *runHandle) {
 		}
 
 		var err error
-		info, err = hoster.Resolve(it.URL, acc)
+		info, err = hoster.Resolve(h.ctx, it.URL, acc)
 		if err != nil {
 			if errors.Is(err, plugins.ErrAccountRequired) {
 				if m.rotateAccount(it.HosterKey, acc, triedAccounts) {
@@ -828,7 +828,7 @@ func (m *Manager) run(it *Item, h *runHandle) {
 			return
 		}
 
-		downloadURL, err = hoster.FetchDownloadURL(it.URL, acc)
+		downloadURL, err = hoster.FetchDownloadURL(h.ctx, it.URL, acc)
 		if err != nil {
 			if errors.Is(err, plugins.ErrAccountRequired) {
 				if m.rotateAccount(it.HosterKey, acc, triedAccounts) {
@@ -2155,7 +2155,7 @@ func (m *Manager) addItems(pkgID, rawURL string, opts AddOptions) ([]*Item, erro
 	if opts.HosterKey == "" {
 		if hoster, ok := m.matchHoster(rawURL); ok {
 			if exp, ok := hoster.(plugins.Expander); ok {
-				if links, expErr := exp.Expand(rawURL); expErr == nil && len(links) > 0 {
+				if links, expErr := exp.Expand(m.shutdownCtx(), rawURL); expErr == nil && len(links) > 0 {
 					if links = m.externalLinksOnly(rawURL, links); len(links) > 0 {
 						return m.addExpandedItems(pkgID, links, opts)
 					}

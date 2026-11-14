@@ -32,7 +32,7 @@ func (m *Manager) RevalidateAll(ctx context.Context, hosters []plugins.Hoster) {
 		if err != nil {
 			continue
 		}
-		info, err := v.ValidateAccount(creds)
+		info, err := v.ValidateAccount(ctx, creds)
 		if err != nil {
 			m.log.Warn("account: periodic revalidation failed", "account_id", acc.ID, "hoster_key", acc.HosterKey, "error", err)
 			continue

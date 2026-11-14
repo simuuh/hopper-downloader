@@ -48,11 +48,11 @@ type pickyHoster struct {
 	fetchedFor []string
 }
 
-func (p *pickyHoster) Resolve(url string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (p *pickyHoster) Resolve(_ context.Context, url string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	return &plugins.FileInfo{Name: "file.bin", Available: true}, nil
 }
 
-func (p *pickyHoster) FetchDownloadURL(url string, acc *plugins.Account) (string, error) {
+func (p *pickyHoster) FetchDownloadURL(_ context.Context, url string, acc *plugins.Account) (string, error) {
 	p.mu.Lock()
 	p.fetchedFor = append(p.fetchedFor, acc.ID)
 	p.mu.Unlock()

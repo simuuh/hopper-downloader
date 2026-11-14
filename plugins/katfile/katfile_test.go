@@ -1,6 +1,7 @@
 package katfile
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -253,7 +254,7 @@ func TestResolve_Success(t *testing.T) {
 	api := newFakeAPI(t)
 	p := newTestPlugin(t, api.handler(), &fakeTokens{key1: api.validKey1, key2: api.validKey2})
 
-	info, err := p.Resolve("https://katfile.cc/k7l8m9n0p1q2/example.part2.rar", nil)
+	info, err := p.Resolve(context.Background(), "https://katfile.cc/k7l8m9n0p1q2/example.part2.rar", nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -273,7 +274,7 @@ func TestResolve_NotFound(t *testing.T) {
 	api.fileExists = false
 	p := newTestPlugin(t, api.handler(), &fakeTokens{key1: api.validKey1, key2: api.validKey2})
 
-	_, err := p.Resolve("https://katfile.cc/k7l8m9n0p1q2/x.rar", nil)
+	_, err := p.Resolve(context.Background(), "https://katfile.cc/k7l8m9n0p1q2/x.rar", nil)
 	if !errors.Is(err, plugins.ErrNotFound) {
 		t.Errorf("err = %v, want plugins.ErrNotFound", err)
 	}
@@ -281,7 +282,7 @@ func TestResolve_NotFound(t *testing.T) {
 
 func TestResolve_NoAccountConfigured(t *testing.T) {
 	p := New(&fakeTokens{}, nil)
-	_, err := p.Resolve("https://katfile.cc/x/y", nil)
+	_, err := p.Resolve(context.Background(), "https://katfile.cc/x/y", nil)
 	if !errors.Is(err, plugins.ErrAccountRequired) {
 		t.Errorf("err = %v, want plugins.ErrAccountRequired", err)
 	}
@@ -291,7 +292,7 @@ func TestResolve_BadKeys(t *testing.T) {
 	api := newFakeAPI(t)
 	p := newTestPlugin(t, api.handler(), &fakeTokens{key1: "wrong", key2: "wrong"})
 
-	_, err := p.Resolve("https://katfile.cc/k7l8m9n0p1q2/x.rar", nil)
+	_, err := p.Resolve(context.Background(), "https://katfile.cc/k7l8m9n0p1q2/x.rar", nil)
 	if !errors.Is(err, plugins.ErrAccountRequired) {
 		t.Errorf("err = %v, want plugins.ErrAccountRequired", err)
 	}
@@ -301,7 +302,7 @@ func TestFetchDownloadURL_Success(t *testing.T) {
 	api := newFakeAPI(t)
 	p := newTestPlugin(t, api.handler(), &fakeTokens{key1: api.validKey1, key2: api.validKey2})
 
-	got, err := p.FetchDownloadURL("https://katfile.cc/k7l8m9n0p1q2/x.rar", nil)
+	got, err := p.FetchDownloadURL(context.Background(), "https://katfile.cc/k7l8m9n0p1q2/x.rar", nil)
 	if err != nil {
 		t.Fatalf("FetchDownloadURL: %v", err)
 	}
@@ -315,7 +316,7 @@ func TestFetchDownloadURL_NotFound(t *testing.T) {
 	api.fileExists = false
 	p := newTestPlugin(t, api.handler(), &fakeTokens{key1: api.validKey1, key2: api.validKey2})
 
-	_, err := p.FetchDownloadURL("https://katfile.cc/k7l8m9n0p1q2/x.rar", nil)
+	_, err := p.FetchDownloadURL(context.Background(), "https://katfile.cc/k7l8m9n0p1q2/x.rar", nil)
 	if !errors.Is(err, plugins.ErrNotFound) {
 		t.Errorf("err = %v, want plugins.ErrNotFound", err)
 	}
@@ -327,7 +328,7 @@ func TestFetchDownloadURL_RetriesOnceAfterInvalidatedToken(t *testing.T) {
 	p := newTestPlugin(t, api.handler(), &fakeTokens{key1: api.validKey1, key2: api.validKey2})
 
 	// Prime the cache with a token the fake API will reject exactly once.
-	got, err := p.FetchDownloadURL("https://katfile.cc/k7l8m9n0p1q2/x.rar", nil)
+	got, err := p.FetchDownloadURL(context.Background(), "https://katfile.cc/k7l8m9n0p1q2/x.rar", nil)
 	if err != nil {
 		t.Fatalf("FetchDownloadURL: %v", err)
 	}
@@ -340,7 +341,7 @@ func TestFetchDownloadURL_CredentialsFallBackToUsernamePassword(t *testing.T) {
 	api := newFakeAPI(t)
 	p := newTestPlugin(t, api.handler(), &fakeTokens{username: api.validKey1, password: api.validKey2})
 
-	got, err := p.FetchDownloadURL("https://katfile.cc/k7l8m9n0p1q2/x.rar", nil)
+	got, err := p.FetchDownloadURL(context.Background(), "https://katfile.cc/k7l8m9n0p1q2/x.rar", nil)
 	if err != nil {
 		t.Fatalf("FetchDownloadURL: %v", err)
 	}
@@ -354,7 +355,7 @@ func TestValidateAccount_Premium(t *testing.T) {
 	api.paidExpiryDate = "2026-12-31 18:00:00"
 	p := newTestPlugin(t, api.handler(), &fakeTokens{key1: api.validKey1, key2: api.validKey2})
 
-	info, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"key1": api.validKey1, "key2": api.validKey2}})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"key1": api.validKey1, "key2": api.validKey2}})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}
@@ -375,7 +376,7 @@ func TestValidateAccount_FreeUser(t *testing.T) {
 	api.pkgLabel = "Free"
 	p := newTestPlugin(t, api.handler(), &fakeTokens{key1: api.validKey1, key2: api.validKey2})
 
-	info, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"key1": api.validKey1, "key2": api.validKey2}})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"key1": api.validKey1, "key2": api.validKey2}})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}
@@ -388,7 +389,7 @@ func TestValidateAccount_InvalidKeys(t *testing.T) {
 	api := newFakeAPI(t)
 	p := newTestPlugin(t, api.handler(), &fakeTokens{key1: "wrong", key2: "wrong"})
 
-	info, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"key1": "wrong", "key2": "wrong"}})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"key1": "wrong", "key2": "wrong"}})
 	if err != nil {
 		t.Fatalf("ValidateAccount returned an error, want a (Valid: false) result: %v", err)
 	}
@@ -399,7 +400,7 @@ func TestValidateAccount_InvalidKeys(t *testing.T) {
 
 func TestValidateAccount_NoKeysConfigured(t *testing.T) {
 	p := New(&fakeTokens{}, nil)
-	_, err := p.ValidateAccount(nil)
+	_, err := p.ValidateAccount(context.Background(), nil)
 	if !errors.Is(err, plugins.ErrAccountRequired) {
 		t.Errorf("err = %v, want plugins.ErrAccountRequired", err)
 	}

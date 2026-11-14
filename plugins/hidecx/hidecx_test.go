@@ -1,6 +1,7 @@
 package hidecx
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,14 +33,14 @@ type fakeHoster struct {
 func (f *fakeHoster) Name() string      { return f.name }
 func (f *fakeHoster) Domains() []string { return nil }
 func (f *fakeHoster) Match(string) bool { return true }
-func (f *fakeHoster) Resolve(url string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (f *fakeHoster) Resolve(_ context.Context, url string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	f.gotResolveURL, f.gotResolveAcc = url, acc
 	if f.resolveErr != nil {
 		return nil, f.resolveErr
 	}
 	return f.info, nil
 }
-func (f *fakeHoster) FetchDownloadURL(url string, acc *plugins.Account) (string, error) {
+func (f *fakeHoster) FetchDownloadURL(_ context.Context, url string, acc *plugins.Account) (string, error) {
 	f.gotFetchURL, f.gotFetchAcc = url, acc
 	if f.downloadErr != nil {
 		return "", f.downloadErr
@@ -280,7 +281,7 @@ func TestResolve_FetchesContainerResolvesLinkAndDelegates(t *testing.T) {
 		return target, nil, true
 	})
 
-	got, err := p.Resolve("https://hide.cx/container/"+uuid, nil)
+	got, err := p.Resolve(context.Background(), "https://hide.cx/container/"+uuid, nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -321,7 +322,7 @@ func TestFetchDownloadURL_UsesDirectHosterURLFieldWhenPresent(t *testing.T) {
 		return target, nil, true
 	})
 
-	got, err := p.FetchDownloadURL("https://hide.cx/container/"+uuid, nil)
+	got, err := p.FetchDownloadURL(context.Background(), "https://hide.cx/container/"+uuid, nil)
 	if err != nil {
 		t.Fatalf("FetchDownloadURL: %v", err)
 	}
@@ -344,7 +345,7 @@ func TestFetchContainer_NotFound(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := newTestPlugin(srv, nil)
-	_, err := p.fetchContainer("00000000-0000-0000-0000-000000000000")
+	_, err := p.fetchContainer(context.Background(), "00000000-0000-0000-0000-000000000000")
 	if !errors.Is(err, plugins.ErrNotFound) {
 		t.Errorf("err = %v, want plugins.ErrNotFound", err)
 	}
@@ -357,7 +358,7 @@ func TestFetchContainer_RateLimited(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := newTestPlugin(srv, nil)
-	_, err := p.fetchContainer("uuid")
+	_, err := p.fetchContainer(context.Background(), "uuid")
 	if !errors.Is(err, plugins.ErrRateLimited) {
 		t.Errorf("err = %v, want plugins.ErrRateLimited", err)
 	}
@@ -373,7 +374,7 @@ func TestFetchContainer_NotOnlineAccessStatus(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := newTestPlugin(srv, nil)
-	_, err := p.fetchContainer("uuid")
+	_, err := p.fetchContainer(context.Background(), "uuid")
 	if !errors.Is(err, plugins.ErrUnavailable) {
 		t.Errorf("err = %v, want plugins.ErrUnavailable", err)
 	}
@@ -386,7 +387,7 @@ func TestFetchContainer_NoLinks(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := newTestPlugin(srv, nil)
-	_, err := p.fetchContainer("uuid")
+	_, err := p.fetchContainer(context.Background(), "uuid")
 	if !errors.Is(err, plugins.ErrUnavailable) {
 		t.Errorf("err = %v, want plugins.ErrUnavailable", err)
 	}
@@ -416,7 +417,7 @@ func TestFetchContainer_ParsesRealSampleShape(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := newTestPlugin(srv, nil)
-	c, err := p.fetchContainer("11111111-2222-4333-8444-555555555555")
+	c, err := p.fetchContainer(context.Background(), "11111111-2222-4333-8444-555555555555")
 	if err != nil {
 		t.Fatalf("fetchContainer: %v", err)
 	}
@@ -469,7 +470,7 @@ func TestExpand_ReturnsAllOnlineLinksSortedNumerically(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := newTestPlugin(srv, nil)
-	links, err := p.Expand("https://hide.cx/container/" + uuid)
+	links, err := p.Expand(context.Background(), "https://hide.cx/container/"+uuid)
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
@@ -507,7 +508,7 @@ func TestExpand_UsesContainerPasswordForEveryLink(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := newTestPlugin(srv, nil)
-	links, err := p.Expand("https://hide.cx/container/" + uuid)
+	links, err := p.Expand(context.Background(), "https://hide.cx/container/"+uuid)
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
@@ -529,7 +530,7 @@ func TestExpand_NullPasswordBecomesEmptyString(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := newTestPlugin(srv, nil)
-	links, err := p.Expand("https://hide.cx/container/" + uuid)
+	links, err := p.Expand(context.Background(), "https://hide.cx/container/"+uuid)
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
@@ -559,7 +560,7 @@ func TestExpand_EmptyNameFallsBackToURLDerivedFilename(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := newTestPlugin(srv, nil)
-	links, err := p.Expand("https://hide.cx/container/" + uuid)
+	links, err := p.Expand(context.Background(), "https://hide.cx/container/"+uuid)
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
@@ -582,7 +583,7 @@ func TestExpand_SkipsOfflineLinks(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := newTestPlugin(srv, nil)
-	links, err := p.Expand("https://hide.cx/container/" + uuid)
+	links, err := p.Expand(context.Background(), "https://hide.cx/container/"+uuid)
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
@@ -601,7 +602,7 @@ func TestExpand_NoOnlineLinksReturnsUnavailable(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := newTestPlugin(srv, nil)
-	_, err := p.Expand("https://hide.cx/container/" + uuid)
+	_, err := p.Expand(context.Background(), "https://hide.cx/container/"+uuid)
 	if !errors.Is(err, plugins.ErrUnavailable) {
 		t.Errorf("err = %v, want plugins.ErrUnavailable", err)
 	}
@@ -614,7 +615,7 @@ func TestExpand_ContainerFetchErrorPropagates(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := newTestPlugin(srv, nil)
-	_, err := p.Expand("https://hide.cx/container/11111111-2222-4333-8444-555555555555")
+	_, err := p.Expand(context.Background(), "https://hide.cx/container/11111111-2222-4333-8444-555555555555")
 	if !errors.Is(err, plugins.ErrNotFound) {
 		t.Errorf("err = %v, want plugins.ErrNotFound", err)
 	}
@@ -622,7 +623,7 @@ func TestExpand_ContainerFetchErrorPropagates(t *testing.T) {
 
 func TestExpand_InvalidURLReturnsError(t *testing.T) {
 	p := New(nil, nil)
-	if _, err := p.Expand("https://hide.cx/"); err == nil {
+	if _, err := p.Expand(context.Background(), "https://hide.cx/"); err == nil {
 		t.Error("expected an error for a URL with no extractable UUID")
 	}
 }
@@ -664,7 +665,7 @@ func TestResolveLinkURL_EscapesLinkID(t *testing.T) {
 	t.Cleanup(srv.Close)
 	p := newTestPlugin(srv, nil)
 
-	if _, err := p.resolveLinkURL(containerHandlerUUID, containerLink{ID: "../../x?y="}); err != nil {
+	if _, err := p.resolveLinkURL(context.Background(), containerHandlerUUID, containerLink{ID: "../../x?y="}); err != nil {
 		t.Fatal(err)
 	}
 	if want := "/containers/" + containerHandlerUUID + "/links/..%2F..%2Fx%3Fy="; gotPath != want || gotQuery != "" {
@@ -692,7 +693,7 @@ func TestExpand_RefusesOversizedContainer(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := newTestPlugin(srv, nil)
-	if _, err := p.Expand("https://hide.cx/container/" + containerHandlerUUID); err == nil {
+	if _, err := p.Expand(context.Background(), "https://hide.cx/container/"+containerHandlerUUID); err == nil {
 		t.Fatal("Expand accepted a container over the link limit")
 	}
 	if n := resolves.Load(); n != 0 {
@@ -714,7 +715,7 @@ func TestExpand_SkipsNestedContainers(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	links, err := newTestPlugin(srv, nil).Expand("https://hide.cx/container/" + containerHandlerUUID)
+	links, err := newTestPlugin(srv, nil).Expand(context.Background(), "https://hide.cx/container/"+containerHandlerUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -746,8 +747,8 @@ func TestDelegateErrors_FallbackSentinelsBecomeUnavailable(t *testing.T) {
 		t.Run(sentinel.Error(), func(t *testing.T) {
 			p := newDelegatingPlugin(t, &fakeHoster{name: "debrid", resolveErr: sentinel, downloadErr: sentinel})
 
-			_, rErr := p.Resolve(containerURL, nil)
-			_, fErr := p.FetchDownloadURL(containerURL, nil)
+			_, rErr := p.Resolve(context.Background(), containerURL, nil)
+			_, fErr := p.FetchDownloadURL(context.Background(), containerURL, nil)
 			for name, err := range map[string]error{"Resolve": rErr, "FetchDownloadURL": fErr} {
 				if errors.Is(err, sentinel) {
 					t.Errorf("%s leaks %v to the queue", name, sentinel)
@@ -765,7 +766,7 @@ func TestDelegateErrors_FallbackSentinelsBecomeUnavailable(t *testing.T) {
 
 func TestDelegateErrors_OtherErrorsKeepIdentity(t *testing.T) {
 	p := newDelegatingPlugin(t, &fakeHoster{name: "debrid", resolveErr: plugins.ErrNotFound})
-	_, err := p.Resolve("https://hide.cx/container/"+containerHandlerUUID, nil)
+	_, err := p.Resolve(context.Background(), "https://hide.cx/container/"+containerHandlerUUID, nil)
 	if !errors.Is(err, plugins.ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound kept", err)
 	}

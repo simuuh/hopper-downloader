@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -56,13 +57,13 @@ func (s *Server) handleAddAccount(w http.ResponseWriter, r *http.Request) {
 	// implement AccountValidator (rapidgator) or a hoster-side failure
 	// (network, unexpected response) leaves Valid unset (unknown) rather
 	// than blocking account creation, which already succeeded above.
-	acc = s.validateInline(acc, &plugins.Account{Username: req.Username, Password: req.Password, Extra: req.Extra})
+	acc = s.validateInline(r.Context(), acc, &plugins.Account{Username: req.Username, Password: req.Password, Extra: req.Extra})
 	writeJSON(w, http.StatusCreated, acc)
 }
 
 // validateInline best-effort validates creds for acc's hoster and returns
 // acc with the cached result applied (unchanged on any failure).
-func (s *Server) validateInline(acc *account.Account, creds *plugins.Account) *account.Account {
+func (s *Server) validateInline(ctx context.Context, acc *account.Account, creds *plugins.Account) *account.Account {
 	hoster, ok := s.hosterByKey(acc.HosterKey)
 	if !ok {
 		return acc
@@ -71,7 +72,7 @@ func (s *Server) validateInline(acc *account.Account, creds *plugins.Account) *a
 	if !ok {
 		return acc
 	}
-	info, err := validator.ValidateAccount(creds)
+	info, err := validator.ValidateAccount(ctx, creds)
 	if err != nil {
 		s.log.Warn("api: inline account validation failed", "hoster_key", acc.HosterKey, "error", err)
 		return acc
@@ -115,7 +116,7 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if creds, err := s.accounts.Credentials(id); err == nil {
-		acc = s.validateInline(acc, creds)
+		acc = s.validateInline(r.Context(), acc, creds)
 	}
 	writeJSON(w, http.StatusOK, acc)
 }
@@ -173,7 +174,7 @@ func (s *Server) handleValidateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info, err := validator.ValidateAccount(creds)
+	info, err := validator.ValidateAccount(r.Context(), creds)
 	if err != nil {
 		s.log.Warn("api: account validation failed", "account_id", id, "error", err)
 		writeError(w, http.StatusBadGateway, "validation request to hoster failed: "+err.Error())

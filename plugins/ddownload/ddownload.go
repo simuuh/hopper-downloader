@@ -147,7 +147,7 @@ type fileInfoResult struct {
 }
 
 // Resolve implements plugins.Hoster via GET /file/info.
-func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (p *Plugin) Resolve(ctx context.Context, rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	key := p.keyFrom(acc)
 	if key == "" {
 		return nil, plugins.ErrAccountRequired
@@ -157,7 +157,7 @@ func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	var env apiEnvelope[[]fileInfoResult]
@@ -240,7 +240,7 @@ func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo
 // The error wraps plugins.ErrUnsupportedHost so the queue hands the link
 // to the next matching plugin (a debrid service that supports
 // ddownload.com) instead of retrying a download that can't ever work.
-func (p *Plugin) FetchDownloadURL(rawURL string, acc *plugins.Account) (string, error) {
+func (p *Plugin) FetchDownloadURL(ctx context.Context, rawURL string, acc *plugins.Account) (string, error) {
 	if p.keyFrom(acc) == "" {
 		return "", plugins.ErrAccountRequired
 	}
@@ -265,13 +265,13 @@ type accountInfoResult struct {
 
 // ValidateAccount implements plugins.AccountValidator via GET
 // /account/info.
-func (p *Plugin) ValidateAccount(acc *plugins.Account) (*plugins.AccountInfo, error) {
+func (p *Plugin) ValidateAccount(ctx context.Context, acc *plugins.Account) (*plugins.AccountInfo, error) {
 	key := p.keyFrom(acc)
 	if key == "" {
 		return nil, plugins.ErrAccountRequired
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	var env apiEnvelope[accountInfoResult]

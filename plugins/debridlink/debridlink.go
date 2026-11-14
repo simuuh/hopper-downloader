@@ -151,8 +151,8 @@ func (p *Plugin) fetchHosts(token string) (multihost.Hosts, error) {
 // Resolve implements plugins.Hoster. Debrid-Link has no separate check
 // endpoint, so this already adds the link (/downloader/add) and keeps the
 // result for FetchDownloadURL.
-func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
-	l, err := p.add(rawURL, acc)
+func (p *Plugin) Resolve(ctx context.Context, rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
+	l, err := p.add(ctx, rawURL, acc)
 	if err != nil {
 		return nil, err
 	}
@@ -161,8 +161,8 @@ func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo
 
 // FetchDownloadURL implements plugins.Hoster via POST /downloader/add (or
 // the result Resolve just fetched).
-func (p *Plugin) FetchDownloadURL(rawURL string, acc *plugins.Account) (string, error) {
-	l, err := p.add(rawURL, acc)
+func (p *Plugin) FetchDownloadURL(ctx context.Context, rawURL string, acc *plugins.Account) (string, error) {
+	l, err := p.add(ctx, rawURL, acc)
 	if err != nil {
 		return "", err
 	}
@@ -177,7 +177,7 @@ func (p *Plugin) FetchDownloadURL(rawURL string, acc *plugins.Account) (string, 
 	return l.DownloadURL, nil
 }
 
-func (p *Plugin) add(rawURL string, acc *plugins.Account) (link, error) {
+func (p *Plugin) add(ctx context.Context, rawURL string, acc *plugins.Account) (link, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return link{}, plugins.ErrAccountRequired
@@ -185,7 +185,7 @@ func (p *Plugin) add(rawURL string, acc *plugins.Account) (link, error) {
 	if l, ok := p.links.Get(rawURL); ok {
 		return l, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	var raw json.RawMessage
 	if err := p.call(ctx, http.MethodPost, "/downloader/add", token, map[string]string{"url": rawURL}, &raw); err != nil {
@@ -213,12 +213,12 @@ func (p *Plugin) add(rawURL string, acc *plugins.Account) (link, error) {
 
 // ValidateAccount implements plugins.AccountValidator via GET
 // /account/infos.
-func (p *Plugin) ValidateAccount(acc *plugins.Account) (*plugins.AccountInfo, error) {
+func (p *Plugin) ValidateAccount(ctx context.Context, acc *plugins.Account) (*plugins.AccountInfo, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return nil, plugins.ErrAccountRequired
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	var infos struct {
 		AccountType int   `json:"accountType"` // 0 free, 1 premium, 2 lifetime

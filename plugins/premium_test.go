@@ -1,6 +1,9 @@
 package plugins
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 type linker struct {
 	fakeHoster
@@ -12,11 +15,11 @@ func (l linker) ReferralURL() string { return l.referral }
 
 type fakeHoster struct{}
 
-func (fakeHoster) Match(string) bool                                 { return false }
-func (fakeHoster) Resolve(string, *Account) (*FileInfo, error)       { return nil, nil }
-func (fakeHoster) FetchDownloadURL(string, *Account) (string, error) { return "", nil }
-func (fakeHoster) Name() string                                      { return "fake" }
-func (fakeHoster) Domains() []string                                 { return nil }
+func (fakeHoster) Match(string) bool                                                  { return false }
+func (fakeHoster) Resolve(context.Context, string, *Account) (*FileInfo, error)       { return nil, nil }
+func (fakeHoster) FetchDownloadURL(context.Context, string, *Account) (string, error) { return "", nil }
+func (fakeHoster) Name() string                                                       { return "fake" }
+func (fakeHoster) Domains() []string                                                  { return nil }
 
 func TestPremiumLink(t *testing.T) {
 	withRef := linker{premium: "https://h/premium", referral: "https://h/?ref=dev"}
