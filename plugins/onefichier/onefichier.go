@@ -113,13 +113,13 @@ func (p *Plugin) Match(rawURL string) bool {
 }
 
 // Resolve implements plugins.Hoster via POST /file/info.cgi.
-func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (p *Plugin) Resolve(ctx context.Context, rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return nil, plugins.ErrAccountRequired
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	resp, err := p.do(ctx, "/file/info.cgi", token, map[string]any{"url": rawURL})
@@ -153,13 +153,13 @@ func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo
 
 // FetchDownloadURL implements plugins.Hoster via POST
 // /download/get_token.cgi.
-func (p *Plugin) FetchDownloadURL(rawURL string, acc *plugins.Account) (string, error) {
+func (p *Plugin) FetchDownloadURL(ctx context.Context, rawURL string, acc *plugins.Account) (string, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return "", plugins.ErrAccountRequired
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	resp, err := p.do(ctx, "/download/get_token.cgi", token, map[string]any{"url": rawURL})

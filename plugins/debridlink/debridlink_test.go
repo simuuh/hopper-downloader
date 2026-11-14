@@ -1,6 +1,7 @@
 package debridlink
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -88,11 +89,11 @@ func TestResolveThenFetch_ShareOneAddCall(t *testing.T) {
 		},
 	})
 	acc := &plugins.Account{Password: testKey}
-	info, err := p.Resolve("https://rapidgator.net/file/abc", acc)
+	info, err := p.Resolve(context.Background(), "https://rapidgator.net/file/abc", acc)
 	if err != nil || info.Name != "movie.part1.rar" || info.Size != 125002 {
 		t.Fatalf("Resolve = %+v, %v", info, err)
 	}
-	got, err := p.FetchDownloadURL("https://rapidgator.net/file/abc", acc)
+	got, err := p.FetchDownloadURL(context.Background(), "https://rapidgator.net/file/abc", acc)
 	if err != nil || got != "https://dl6.debrid.example/dl/x" {
 		t.Fatalf("FetchDownloadURL = %q, %v", got, err)
 	}
@@ -117,13 +118,13 @@ func TestFetch_FolderAndProcessing(t *testing.T) {
 		},
 	})
 	acc := &plugins.Account{Password: testKey}
-	if got, err := p.FetchDownloadURL("https://host.example/one", acc); err != nil || got != "https://dl.example/a" {
+	if got, err := p.FetchDownloadURL(context.Background(), "https://host.example/one", acc); err != nil || got != "https://dl.example/a" {
 		t.Errorf("single-element array: %q, %v", got, err)
 	}
-	if _, err := p.FetchDownloadURL("https://host.example/folder", acc); err == nil {
+	if _, err := p.FetchDownloadURL(context.Background(), "https://host.example/folder", acc); err == nil {
 		t.Error("folder with two files accepted")
 	}
-	if _, err := p.FetchDownloadURL("https://host.example/processing", acc); !errors.Is(err, plugins.ErrUnavailable) {
+	if _, err := p.FetchDownloadURL(context.Background(), "https://host.example/processing", acc); !errors.Is(err, plugins.ErrUnavailable) {
 		t.Errorf("processing: err = %v, want ErrUnavailable", err)
 	}
 }
@@ -142,12 +143,12 @@ func TestErrorMapping(t *testing.T) {
 		p := fakeAPI(t, map[string]func(http.ResponseWriter, *http.Request){
 			"/downloader/add": reply(400, `{"success":false,"error":"`+code+`"}`),
 		})
-		if _, err := p.FetchDownloadURL("https://host.example/x", &plugins.Account{Password: testKey}); !errors.Is(err, want) {
+		if _, err := p.FetchDownloadURL(context.Background(), "https://host.example/x", &plugins.Account{Password: testKey}); !errors.Is(err, want) {
 			t.Errorf("%s: err = %v, want %v", code, err, want)
 		}
 	}
 	p := fakeAPI(t, nil)
-	if _, err := p.FetchDownloadURL("https://host.example/x", &plugins.Account{Password: "wrong"}); !errors.Is(err, plugins.ErrAccountRequired) {
+	if _, err := p.FetchDownloadURL(context.Background(), "https://host.example/x", &plugins.Account{Password: "wrong"}); !errors.Is(err, plugins.ErrAccountRequired) {
 		t.Errorf("bad token: err = %v", err)
 	}
 }
@@ -157,7 +158,7 @@ func TestValidateAccount(t *testing.T) {
 		"/account/infos":    reply(200, `{"success":true,"value":{"username":"Amy","accountType":1,"premiumLeft":3628800}}`),
 		"/downloader/hosts": reply(200, hostsList),
 	})
-	info, err := p.ValidateAccount(&plugins.Account{Password: testKey})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Password: testKey})
 	if err != nil || !info.Valid || info.ExpiresAt == nil {
 		t.Fatalf("ValidateAccount = %+v, %v", info, err)
 	}
@@ -167,7 +168,7 @@ func TestValidateAccount(t *testing.T) {
 	if !p.Match("https://rapidgator.net/file/abc") {
 		t.Error("host list not warmed")
 	}
-	info, err = p.ValidateAccount(&plugins.Account{Password: "wrong"})
+	info, err = p.ValidateAccount(context.Background(), &plugins.Account{Password: "wrong"})
 	if err != nil || info.Valid {
 		t.Errorf("bad key: %+v, %v", info, err)
 	}
@@ -182,7 +183,7 @@ func TestValidateAccount_FreeAndLifetime(t *testing.T) {
 			"/account/infos":    reply(200, body),
 			"/downloader/hosts": reply(200, hostsList),
 		})
-		info, err := p.ValidateAccount(&plugins.Account{Password: testKey})
+		info, err := p.ValidateAccount(context.Background(), &plugins.Account{Password: testKey})
 		if err != nil || !info.Valid || info.ExpiresAt != nil || info.Label != label {
 			t.Errorf("%s: %+v, %v", label, info, err)
 		}

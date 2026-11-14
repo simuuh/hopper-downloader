@@ -1,6 +1,7 @@
 package onefichier
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sync/atomic"
@@ -20,7 +21,7 @@ func TestDo_WaitsForRateLimiter(t *testing.T) {
 	p := newTestPlugin(t, http.HandlerFunc(handler), &fakeTokens{token: "test-token"})
 	p.limiter = rate.NewLimiter(0, 0)
 
-	if _, err := p.Resolve("https://1fichier.com/?placeholder", nil); err == nil {
+	if _, err := p.Resolve(context.Background(), "https://1fichier.com/?placeholder", nil); err == nil {
 		t.Fatal("request went through a closed limiter")
 	}
 	if n := hits.Load(); n != 0 {

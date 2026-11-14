@@ -238,8 +238,8 @@ Hosters are compiled in (`plugins.Hoster`), not loaded with
 ```go
 type Hoster interface {
     Match(url string) bool
-    Resolve(url string, acc *Account) (*FileInfo, error)
-    FetchDownloadURL(url string, acc *Account) (string, error)
+    Resolve(ctx context.Context, url string, acc *Account) (*FileInfo, error)
+    FetchDownloadURL(ctx context.Context, url string, acc *Account) (string, error)
     Name() string
     Domains() []string
 }

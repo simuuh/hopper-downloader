@@ -1,6 +1,7 @@
 package rapidgator
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -259,7 +260,7 @@ func TestResolve_Success(t *testing.T) {
 	api := newFakeAPI(t)
 	p := newTestPlugin(t, api.handler(), api.validUser, api.validPass)
 
-	info, err := p.Resolve("https://rapidgator.net/file/"+api.file.FileID+"/movie.rar.html", nil)
+	info, err := p.Resolve(context.Background(), "https://rapidgator.net/file/"+api.file.FileID+"/movie.rar.html", nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -276,7 +277,7 @@ func TestResolve_FileNotFound(t *testing.T) {
 	api.fileExists = false
 	p := newTestPlugin(t, api.handler(), api.validUser, api.validPass)
 
-	_, err := p.Resolve("https://rapidgator.net/file/"+api.file.FileID+"/x.html", nil)
+	_, err := p.Resolve(context.Background(), "https://rapidgator.net/file/"+api.file.FileID+"/x.html", nil)
 	if !errors.Is(err, plugins.ErrNotFound) {
 		t.Errorf("err = %v, want plugins.ErrNotFound", err)
 	}
@@ -286,7 +287,7 @@ func TestResolve_WrongCredentials(t *testing.T) {
 	api := newFakeAPI(t)
 	p := newTestPlugin(t, api.handler(), "wrong@example.com", "wrong-password")
 
-	_, err := p.Resolve("https://rapidgator.net/file/"+api.file.FileID+"/x.html", nil)
+	_, err := p.Resolve(context.Background(), "https://rapidgator.net/file/"+api.file.FileID+"/x.html", nil)
 	if !errors.Is(err, plugins.ErrAccountRequired) {
 		t.Errorf("err = %v, want plugins.ErrAccountRequired", err)
 	}
@@ -297,7 +298,7 @@ func TestResolve_RetriesOnceAfterExpiredToken(t *testing.T) {
 	api.rejectToken = true // the first authenticated call after login reports the token invalid
 	p := newTestPlugin(t, api.handler(), api.validUser, api.validPass)
 
-	info, err := p.Resolve("https://rapidgator.net/file/"+api.file.FileID+"/x.html", nil)
+	info, err := p.Resolve(context.Background(), "https://rapidgator.net/file/"+api.file.FileID+"/x.html", nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -317,7 +318,7 @@ func TestResolve_UsesAccountParamOverConfiguredOne(t *testing.T) {
 	p := newTestPlugin(t, api.handler(), "wrong@example.com", "wrong-password")
 
 	acc := &plugins.Account{Username: "override@example.com", Password: "override-password"}
-	info, err := p.Resolve("https://rapidgator.net/file/"+api.file.FileID+"/x.html", acc)
+	info, err := p.Resolve(context.Background(), "https://rapidgator.net/file/"+api.file.FileID+"/x.html", acc)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -330,7 +331,7 @@ func TestFetchDownloadURL_Success(t *testing.T) {
 	api := newFakeAPI(t)
 	p := newTestPlugin(t, api.handler(), api.validUser, api.validPass)
 
-	got, err := p.FetchDownloadURL("https://rapidgator.net/file/"+api.file.FileID+"/x.html", nil)
+	got, err := p.FetchDownloadURL(context.Background(), "https://rapidgator.net/file/"+api.file.FileID+"/x.html", nil)
 	if err != nil {
 		t.Fatalf("FetchDownloadURL: %v", err)
 	}
@@ -345,7 +346,7 @@ func TestFetchDownloadURL_NotFound(t *testing.T) {
 	api.fileExists = false
 	p := newTestPlugin(t, api.handler(), api.validUser, api.validPass)
 
-	_, err := p.FetchDownloadURL("https://rapidgator.net/file/"+api.file.FileID+"/x.html", nil)
+	_, err := p.FetchDownloadURL(context.Background(), "https://rapidgator.net/file/"+api.file.FileID+"/x.html", nil)
 	if !errors.Is(err, plugins.ErrNotFound) {
 		t.Errorf("err = %v, want plugins.ErrNotFound", err)
 	}
@@ -355,7 +356,7 @@ func TestValidateAccount_ValidPremium(t *testing.T) {
 	api := newFakeAPI(t)
 	p := newTestPlugin(t, api.handler(), api.validUser, api.validPass)
 
-	info, err := p.ValidateAccount(&plugins.Account{Username: api.validUser, Password: api.validPass})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Username: api.validUser, Password: api.validPass})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}
@@ -375,7 +376,7 @@ func TestValidateAccount_NotPremium(t *testing.T) {
 	api.user.IsPremium = false
 	p := newTestPlugin(t, api.handler(), api.validUser, api.validPass)
 
-	info, err := p.ValidateAccount(&plugins.Account{Username: api.validUser, Password: api.validPass})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Username: api.validUser, Password: api.validPass})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}
@@ -388,7 +389,7 @@ func TestValidateAccount_InvalidCredentials(t *testing.T) {
 	api := newFakeAPI(t)
 	p := newTestPlugin(t, api.handler(), api.validUser, api.validPass)
 
-	info, err := p.ValidateAccount(&plugins.Account{Username: "wrong@example.com", Password: "wrong"})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Username: "wrong@example.com", Password: "wrong"})
 	if err != nil {
 		t.Fatalf("ValidateAccount returned an error instead of Valid:false: %v", err)
 	}
@@ -403,7 +404,7 @@ func TestValidateAccount_PremiumEndTimeUnixSeconds(t *testing.T) {
 	api.user.PremiumEndTimeRaw = json.RawMessage(fmt.Sprintf("%d", expiry.Unix()))
 	p := newTestPlugin(t, api.handler(), api.validUser, api.validPass)
 
-	info, err := p.ValidateAccount(&plugins.Account{Username: api.validUser, Password: api.validPass})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Username: api.validUser, Password: api.validPass})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}

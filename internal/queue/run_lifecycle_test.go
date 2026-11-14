@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,14 +34,14 @@ func newHangingHoster() *hangingHoster {
 func (h *hangingHoster) Name() string      { return "hanging" }
 func (h *hangingHoster) Domains() []string { return nil }
 func (h *hangingHoster) Match(string) bool { return true }
-func (h *hangingHoster) Resolve(string, *plugins.Account) (*plugins.FileInfo, error) {
+func (h *hangingHoster) Resolve(context.Context, string, *plugins.Account) (*plugins.FileInfo, error) {
 	if h.calls.Add(1) == 1 {
 		close(h.entered)
 		<-h.release
 	}
 	return &plugins.FileInfo{Name: "f.bin", Available: true}, nil
 }
-func (h *hangingHoster) FetchDownloadURL(url string, _ *plugins.Account) (string, error) {
+func (h *hangingHoster) FetchDownloadURL(_ context.Context, url string, _ *plugins.Account) (string, error) {
 	return url, nil
 }
 
@@ -154,10 +155,10 @@ type panickingHoster struct{}
 func (panickingHoster) Name() string      { return "panicking" }
 func (panickingHoster) Domains() []string { return nil }
 func (panickingHoster) Match(string) bool { return true }
-func (panickingHoster) Resolve(string, *plugins.Account) (*plugins.FileInfo, error) {
+func (panickingHoster) Resolve(context.Context, string, *plugins.Account) (*plugins.FileInfo, error) {
 	panic("unexpected response shape")
 }
-func (panickingHoster) FetchDownloadURL(url string, _ *plugins.Account) (string, error) {
+func (panickingHoster) FetchDownloadURL(_ context.Context, url string, _ *plugins.Account) (string, error) {
 	return url, nil
 }
 
@@ -186,4 +187,59 @@ func TestRun_PluginPanicFailsOnlyThatItem(t *testing.T) {
 	if mgr.activeFiles.Load() != 0 {
 		t.Fatalf("activeFiles = %d after the run ended, want its slot freed", mgr.activeFiles.Load())
 	}
+}
+
+// ctxHoster's Resolve waits for its context, like a plugin call to a
+// hoster that doesn't answer, and reports when it returned.
+type ctxHoster struct {
+	entered  chan struct{}
+	returned chan error
+}
+
+func (h *ctxHoster) Name() string      { return "ctxaware" }
+func (h *ctxHoster) Domains() []string { return nil }
+func (h *ctxHoster) Match(string) bool { return true }
+func (h *ctxHoster) Resolve(ctx context.Context, _ string, _ *plugins.Account) (*plugins.FileInfo, error) {
+	close(h.entered)
+	<-ctx.Done()
+	h.returned <- ctx.Err()
+	return nil, ctx.Err()
+}
+func (h *ctxHoster) FetchDownloadURL(_ context.Context, url string, _ *plugins.Account) (string, error) {
+	return url, nil
+}
+
+// Pausing an item cancels the context its plugin call runs with, so a
+// hanging hoster request ends at once instead of after its own timeout
+// (M13).
+func TestRun_PauseCancelsPluginCall(t *testing.T) {
+	h := &ctxHoster{entered: make(chan struct{}), returned: make(chan error, 1)}
+	mgr := newLifecycleManager(t, h, Config{ParallelFiles: 1, PollInterval: 10 * time.Millisecond})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+
+	it, err := mgr.AddLink("https://hoster.example/file/placeholder", AddOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-h.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run never reached Resolve")
+	}
+
+	if err := mgr.Pause(it.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-h.returned:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Resolve's context ended with %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Resolve still running after Pause: the plugin call didn't get the run's context")
+	}
+	waitForState(t, mgr, it.ID, StatePaused, 2*time.Second)
 }

@@ -1,6 +1,7 @@
 package onefichier
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -37,7 +38,7 @@ func TestResolve_KOWithoutNotFoundIsTransient(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), &fakeTokens{token: "test-token"})
 
-	_, err := p.Resolve("https://1fichier.com/?placeholder", nil)
+	_, err := p.Resolve(context.Background(), "https://1fichier.com/?placeholder", nil)
 	if errors.Is(err, plugins.ErrNotFound) {
 		t.Fatalf("flood KO mapped to ErrNotFound: %v", err)
 	}
@@ -52,7 +53,7 @@ func TestResolve_KONotFoundStaysPermanent(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), &fakeTokens{token: "test-token"})
 
-	if _, err := p.Resolve("https://1fichier.com/?placeholder", nil); !errors.Is(err, plugins.ErrNotFound) {
+	if _, err := p.Resolve(context.Background(), "https://1fichier.com/?placeholder", nil); !errors.Is(err, plugins.ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }

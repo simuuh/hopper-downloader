@@ -1,6 +1,7 @@
 package alldebrid
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -92,11 +93,11 @@ func TestResolve(t *testing.T) {
 			_, _ = w.Write([]byte(`{"status":"success","data":{"infos":[{"link":"x","filename":"movie.part1.rar","size":1048576,"host":"rapidgator"}]}}`))
 		},
 	})
-	info, err := p.Resolve("https://rapidgator.net/file/abc", &plugins.Account{Password: testKey})
+	info, err := p.Resolve(context.Background(), "https://rapidgator.net/file/abc", &plugins.Account{Password: testKey})
 	if err != nil || info.Name != "movie.part1.rar" || info.Size != 1048576 || !info.Available {
 		t.Fatalf("Resolve = %+v, %v", info, err)
 	}
-	if _, err := p.Resolve("https://rapidgator.net/file/dead", &plugins.Account{Password: testKey}); !errors.Is(err, plugins.ErrNotFound) {
+	if _, err := p.Resolve(context.Background(), "https://rapidgator.net/file/dead", &plugins.Account{Password: testKey}); !errors.Is(err, plugins.ErrNotFound) {
 		t.Errorf("dead link: err = %v, want ErrNotFound", err)
 	}
 }
@@ -110,7 +111,7 @@ func TestFetchDownloadURL_Direct(t *testing.T) {
 			_, _ = w.Write([]byte(`{"status":"success","data":{"link":"https://dl.example.com/f","filename":"f","filesize":1}}`))
 		},
 	})
-	got, err := p.FetchDownloadURL("https://rapidgator.net/file/abc", &plugins.Account{Password: testKey})
+	got, err := p.FetchDownloadURL(context.Background(), "https://rapidgator.net/file/abc", &plugins.Account{Password: testKey})
 	if err != nil || got != "https://dl.example.com/f" {
 		t.Fatalf("FetchDownloadURL = %q, %v", got, err)
 	}
@@ -131,7 +132,7 @@ func TestFetchDownloadURL_DelayedIsPolled(t *testing.T) {
 			_, _ = w.Write([]byte(`{"status":"success","data":{"status":2,"time_left":0,"link":"https://dl.example.com/ready"}}`))
 		},
 	})
-	got, err := p.FetchDownloadURL("https://rapidgator.net/file/abc", &plugins.Account{Password: testKey})
+	got, err := p.FetchDownloadURL(context.Background(), "https://rapidgator.net/file/abc", &plugins.Account{Password: testKey})
 	if err != nil || got != "https://dl.example.com/ready" || polls.Load() != 3 {
 		t.Fatalf("FetchDownloadURL = %q, %v after %d polls", got, err, polls.Load())
 	}
@@ -150,7 +151,7 @@ func TestFetchDownloadURL_ErrorMapping(t *testing.T) {
 		p := fakeAPI(t, map[string]func(http.ResponseWriter, *http.Request){
 			"/v4/link/unlock": reply(`{"status":"error","error":{"code":"` + code + `","message":"m"}}`),
 		})
-		if _, err := p.FetchDownloadURL("https://rapidgator.net/file/abc", &plugins.Account{Password: testKey}); !errors.Is(err, want) {
+		if _, err := p.FetchDownloadURL(context.Background(), "https://rapidgator.net/file/abc", &plugins.Account{Password: testKey}); !errors.Is(err, want) {
 			t.Errorf("%s: err = %v, want %v", code, err, want)
 		}
 	}
@@ -158,7 +159,7 @@ func TestFetchDownloadURL_ErrorMapping(t *testing.T) {
 
 func TestFetchDownloadURL_BadKeyIsAccountRequired(t *testing.T) {
 	p := fakeAPI(t, nil)
-	_, err := p.FetchDownloadURL("https://rapidgator.net/file/abc", &plugins.Account{Password: "wrong"})
+	_, err := p.FetchDownloadURL(context.Background(), "https://rapidgator.net/file/abc", &plugins.Account{Password: "wrong"})
 	if !errors.Is(err, plugins.ErrAccountRequired) {
 		t.Fatalf("err = %v, want ErrAccountRequired", err)
 	}
@@ -170,7 +171,7 @@ func TestValidateAccount(t *testing.T) {
 		"/v4/user":         reply(`{"status":"success","data":{"user":{"username":"u","isPremium":true,"isTrial":false,"premiumUntil":` + strconv.FormatInt(until.Unix(), 10) + `}}}`),
 		"/v4.1/user/hosts": reply(userHosts),
 	})
-	info, err := p.ValidateAccount(&plugins.Account{Password: testKey})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Password: testKey})
 	if err != nil || !info.Valid || info.ExpiresAt == nil || !info.ExpiresAt.Equal(until) || info.Label != "Premium until 2027-01-31" {
 		t.Fatalf("ValidateAccount = %+v, %v", info, err)
 	}
@@ -178,7 +179,7 @@ func TestValidateAccount(t *testing.T) {
 		t.Error("host list not warmed by a successful validation")
 	}
 
-	info, err = p.ValidateAccount(&plugins.Account{Password: "wrong"})
+	info, err = p.ValidateAccount(context.Background(), &plugins.Account{Password: "wrong"})
 	if err != nil || info.Valid {
 		t.Fatalf("bad key: %+v, %v — want Valid=false", info, err)
 	}
@@ -189,7 +190,7 @@ func TestValidateAccount_Free(t *testing.T) {
 		"/v4/user":         reply(`{"status":"success","data":{"user":{"isPremium":false,"isTrial":false,"premiumUntil":0}}}`),
 		"/v4.1/user/hosts": reply(userHosts),
 	})
-	info, err := p.ValidateAccount(&plugins.Account{Password: testKey})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Password: testKey})
 	if err != nil || !info.Valid || info.ExpiresAt != nil || info.Label != "Free account (no premium)" {
 		t.Fatalf("ValidateAccount = %+v, %v", info, err)
 	}

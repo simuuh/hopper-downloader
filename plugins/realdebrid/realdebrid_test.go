@@ -1,6 +1,7 @@
 package realdebrid
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -289,7 +290,7 @@ func TestResolve_Success(t *testing.T) {
 	}, nil, http.StatusOK, 0)
 	p := newTestPlugin(t, handler, "test-token")
 
-	info, err := p.Resolve("https://rapidgator.net/file/123", nil)
+	info, err := p.Resolve(context.Background(), "https://rapidgator.net/file/123", nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -308,7 +309,7 @@ func TestResolve_UsesAccountFromArgumentOverTokenSource(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), "source-token")
 
-	_, err := p.Resolve("https://rapidgator.net/f", &plugins.Account{Extra: map[string]string{"api_token": "arg-token"}})
+	_, err := p.Resolve(context.Background(), "https://rapidgator.net/f", &plugins.Account{Extra: map[string]string{"api_token": "arg-token"}})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -316,7 +317,7 @@ func TestResolve_UsesAccountFromArgumentOverTokenSource(t *testing.T) {
 
 func TestResolve_NoAccountConfigured(t *testing.T) {
 	p := newTestPlugin(t, http.NotFoundHandler(), "")
-	_, err := p.Resolve("https://rapidgator.net/f", nil)
+	_, err := p.Resolve(context.Background(), "https://rapidgator.net/f", nil)
 	if err != plugins.ErrAccountRequired {
 		t.Errorf("err = %v, want plugins.ErrAccountRequired", err)
 	}
@@ -326,7 +327,7 @@ func TestResolve_Unavailable(t *testing.T) {
 	handler := unrestrictHandler(t, map[string]any{}, nil, http.StatusServiceUnavailable, 0)
 	p := newTestPlugin(t, handler, "test-token")
 
-	_, err := p.Resolve("https://rapidgator.net/f", nil)
+	_, err := p.Resolve(context.Background(), "https://rapidgator.net/f", nil)
 	if err != plugins.ErrUnavailable {
 		t.Errorf("err = %v, want plugins.ErrUnavailable", err)
 	}
@@ -336,7 +337,7 @@ func TestResolve_BadToken(t *testing.T) {
 	handler := unrestrictHandler(t, map[string]any{}, nil, http.StatusUnauthorized, 0)
 	p := newTestPlugin(t, handler, "test-token")
 
-	_, err := p.Resolve("https://rapidgator.net/f", nil)
+	_, err := p.Resolve(context.Background(), "https://rapidgator.net/f", nil)
 	if err != plugins.ErrAccountRequired {
 		t.Errorf("err = %v, want plugins.ErrAccountRequired", err)
 	}
@@ -348,7 +349,7 @@ func TestFetchDownloadURL_Success(t *testing.T) {
 	}, 0, http.StatusOK)
 	p := newTestPlugin(t, handler, "test-token")
 
-	got, err := p.FetchDownloadURL("https://rapidgator.net/file/123", nil)
+	got, err := p.FetchDownloadURL(context.Background(), "https://rapidgator.net/file/123", nil)
 	if err != nil {
 		t.Fatalf("FetchDownloadURL: %v", err)
 	}
@@ -361,7 +362,7 @@ func TestFetchDownloadURL_EmptyDownloadIsUnavailable(t *testing.T) {
 	handler := unrestrictHandler(t, nil, map[string]any{"download": ""}, 0, http.StatusOK)
 	p := newTestPlugin(t, handler, "test-token")
 
-	_, err := p.FetchDownloadURL("https://rapidgator.net/f", nil)
+	_, err := p.FetchDownloadURL(context.Background(), "https://rapidgator.net/f", nil)
 	if err == nil {
 		t.Fatal("expected an error for an empty download URL")
 	}
@@ -380,7 +381,7 @@ func TestDo_RetriesOn429ThenSucceeds(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), "test-token")
 
-	info, err := p.Resolve("https://rapidgator.net/f", nil)
+	info, err := p.Resolve(context.Background(), "https://rapidgator.net/f", nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -400,7 +401,7 @@ func TestDo_ExhaustsRetriesReturnsRateLimited(t *testing.T) {
 	}
 	p := newTestPlugin(t, http.HandlerFunc(handler), "test-token")
 
-	_, err := p.Resolve("https://rapidgator.net/f", nil)
+	_, err := p.Resolve(context.Background(), "https://rapidgator.net/f", nil)
 	if err != plugins.ErrRateLimited {
 		t.Errorf("err = %v, want plugins.ErrRateLimited", err)
 	}
