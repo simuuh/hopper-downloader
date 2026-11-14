@@ -70,7 +70,7 @@ jobs:
           # Full history: gitleaks scans the commits of the PR/push, not
           # only the final tree.
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # PR comments would need pull-requests: write; findings show up
