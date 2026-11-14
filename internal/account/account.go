@@ -4,7 +4,6 @@
 package account
 
 import (
-	"crypto/cipher"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -67,14 +66,17 @@ type secret struct {
 type record struct {
 	Account
 	Ciphertext []byte `json:"ciphertext"`
+	// CipherVersion says how Ciphertext was sealed (see crypto.go);
+	// absent in records written before versioning, i.e. cipherLegacy.
+	CipherVersion int `json:"cipher_version,omitempty"`
 }
 
 // Manager stores and retrieves hoster accounts. It is the single owner of
 // the encryption key in memory; callers never see it.
 type Manager struct {
-	db  *bbolt.DB
-	gcm cipher.AEAD
-	log *slog.Logger
+	db      *bbolt.DB
+	ciphers ciphers
+	log     *slog.Logger
 
 	mu       sync.RWMutex
 	accounts map[string]*record
@@ -94,11 +96,16 @@ const failureCooldown = 30 * time.Minute
 // an AES-256-GCM cipher from encryptionKey, which must be exactly 32
 // bytes. It never logs or otherwise exposes encryptionKey or any
 // decrypted secret.
+//
+// Every stored record is decrypted once on startup (see checkAndMigrate):
+// records in the legacy format are re-sealed in the current one, and
+// records the key can't open are reported loudly, since AccountFor
+// would otherwise just behave as if no account were configured.
 func New(db *bbolt.DB, encryptionKey string, log *slog.Logger) (*Manager, error) {
 	if log == nil {
 		return nil, fmt.Errorf("account: logger is required")
 	}
-	gcm, err := newAEAD(encryptionKey)
+	cs, err := newCiphers(encryptionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -111,11 +118,69 @@ func New(db *bbolt.DB, encryptionKey string, log *slog.Logger) (*Manager, error)
 		return nil, fmt.Errorf("account: init bucket: %w", err)
 	}
 
-	m := &Manager{db: db, gcm: gcm, log: log, accounts: make(map[string]*record), cooldown: make(map[string]time.Time)}
+	m := &Manager{db: db, ciphers: cs, log: log, accounts: make(map[string]*record), cooldown: make(map[string]time.Time)}
 	if err := m.load(); err != nil {
 		return nil, err
 	}
+	if err := m.checkAndMigrate(); err != nil {
+		return nil, err
+	}
 	return m, nil
+}
+
+// checkAndMigrate decrypts every record once. A legacy record is
+// re-sealed with the current cipher and persisted; one that fails to
+// decrypt is left untouched (a corrected encryption_key can still open
+// it) and logged as an error, so a changed or lost key shows up at
+// startup rather than as hoster plugins silently finding no account.
+// Runs from New, before m is shared.
+func (m *Manager) checkAndMigrate() error {
+	var unreadable []string
+	migrated := 0
+	for _, r := range m.accounts {
+		acc, err := m.decrypt(r)
+		if err != nil {
+			unreadable = append(unreadable, r.ID)
+			continue
+		}
+		if r.CipherVersion == cipherV1 {
+			continue
+		}
+		updated := *r
+		if err := m.sealInto(&updated, acc.Password, acc.Extra); err != nil {
+			return err
+		}
+		if err := m.persist(&updated); err != nil {
+			return fmt.Errorf("account: migrate %s: %w", r.ID, err)
+		}
+		m.accounts[r.ID] = &updated
+		migrated++
+	}
+	if migrated > 0 {
+		m.log.Info("account: re-encrypted stored accounts in the current format", "count", migrated)
+	}
+	if len(unreadable) > 0 {
+		sort.Strings(unreadable)
+		m.log.Error("account: stored accounts cannot be decrypted; was accounts.encryption_key changed? They stay unusable until the original key is restored or the accounts are re-entered",
+			"count", len(unreadable), "total", len(m.accounts), "account_ids", unreadable)
+	}
+	return nil
+}
+
+// sealInto encrypts password and extra for r with the current cipher,
+// bound to r's id and hoster key, and stores the result in r.
+func (m *Manager) sealInto(r *record, password string, extra map[string]string) error {
+	sec, err := json.Marshal(secret{Password: password, Extra: extra})
+	if err != nil {
+		return fmt.Errorf("account: marshal secret: %w", err)
+	}
+	ciphertext, err := seal(m.ciphers.current, sec, recordAAD(r.ID, r.HosterKey))
+	if err != nil {
+		return err
+	}
+	r.Ciphertext = ciphertext
+	r.CipherVersion = cipherV1
+	return nil
 }
 
 func (m *Manager) load() error {
@@ -145,15 +210,6 @@ func (m *Manager) persist(r *record) error {
 // touching disk; only username and hosterKey are stored in the clear.
 func (m *Manager) Add(hosterKey, username, password string, extra map[string]string) (*Account, error) {
 	id := newID()
-	sec, err := json.Marshal(secret{Password: password, Extra: extra})
-	if err != nil {
-		return nil, fmt.Errorf("account: marshal secret: %w", err)
-	}
-	ciphertext, err := seal(m.gcm, sec)
-	if err != nil {
-		return nil, err
-	}
-
 	now := time.Now()
 	r := &record{
 		Account: Account{
@@ -164,7 +220,9 @@ func (m *Manager) Add(hosterKey, username, password string, extra map[string]str
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
-		Ciphertext: ciphertext,
+	}
+	if err := m.sealInto(r, password, extra); err != nil {
+		return nil, err
 	}
 
 	m.mu.Lock()
@@ -372,7 +430,13 @@ func (m *Manager) Credentials(id string) (*plugins.Account, error) {
 }
 
 func (m *Manager) decrypt(r *record) (*plugins.Account, error) {
-	plaintext, err := open(m.gcm, r.Ciphertext)
+	var plaintext []byte
+	var err error
+	if r.CipherVersion == cipherV1 {
+		plaintext, err = open(m.ciphers.current, r.Ciphertext, recordAAD(r.ID, r.HosterKey))
+	} else {
+		plaintext, err = open(m.ciphers.legacy, r.Ciphertext, nil)
+	}
 	if err != nil {
 		m.log.Error("account: decrypt failed", "account_id", r.ID, "error", err)
 		return nil, fmt.Errorf("account: decrypt failed")
@@ -454,17 +518,10 @@ func (m *Manager) UpdateCredentials(id, username, password string, extra map[str
 	if extra == nil {
 		extra = cur.Extra
 	}
-	sec, err := json.Marshal(secret{Password: password, Extra: extra})
-	if err != nil {
-		return nil, fmt.Errorf("account: marshal secret: %w", err)
-	}
-	ciphertext, err := seal(m.gcm, sec)
-	if err != nil {
+	updated := *r
+	if err := m.sealInto(&updated, password, extra); err != nil {
 		return nil, err
 	}
-
-	updated := *r
-	updated.Ciphertext = ciphertext
 	if username != "" {
 		updated.Username = username
 	}

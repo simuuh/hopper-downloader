@@ -394,8 +394,15 @@ extraction gets `409` instead of a second `unrar` on the same files.
 
 ## Accounts
 
-Credentials are AES-256-GCM encrypted at rest (`accounts.encryption_key`,
-32 bytes). Validation results (valid, expiry, traffic, label) are cached
+Credentials are AES-256-GCM encrypted at rest. The key is derived from
+`accounts.encryption_key` (32 bytes) with HKDF-SHA256, and each
+ciphertext is bound to its record's id and hoster key as associated
+data, so a secret copied into another record doesn't decrypt. Records
+carry a `cipher_version`; on startup every record is decrypted once,
+records from before versioning are re-sealed (an older Hopper can't
+read them afterwards), and records the key can't open are logged as an
+error — a changed key would otherwise only show as plugins finding no
+account. Validation results (valid, expiry, traffic, label) are cached
 next to them; list endpoints never call the hoster. Validation runs on
 add (best effort), on "Re-check", on credential update
 (`PUT /accounts/{id}`) and every 12 h in the background. A confirmed
