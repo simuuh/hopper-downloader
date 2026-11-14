@@ -20,7 +20,7 @@ COPY web/src ./src
 RUN npm run build
 
 # ---- Stage 2: build the Go binaries ----
-FROM golang:1.26-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS go-builder
+FROM golang:1.26-alpine@sha256:30b1e546a9c7fa3b747c2bdba3a0c7bdf3a02ebb4c5b8405d2f948d7e8aac4ec AS go-builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
