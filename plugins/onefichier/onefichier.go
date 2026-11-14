@@ -26,6 +26,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/simuuh/hopper-downloader/plugins"
 )
 
@@ -33,6 +35,12 @@ const (
 	pluginName     = "onefichier"
 	apiBase        = "https://api.1fichier.com/v1"
 	requestTimeout = 30 * time.Second
+
+	// requestsPerSecond and rateLimiterBurst pace API calls. 1fichier
+	// temporarily bans clients that flood its API; the numbers are a
+	// conservative choice of ours, not a documented limit.
+	requestsPerSecond = 1.0
+	rateLimiterBurst  = 2
 )
 
 // TokenSource resolves the current 1fichier API key from the configured
@@ -49,9 +57,10 @@ type TokenSource interface {
 
 // Plugin is the 1fichier Hoster implementation.
 type Plugin struct {
-	tokens TokenSource
-	client *http.Client
-	log    *slog.Logger
+	tokens  TokenSource
+	client  *http.Client
+	limiter *rate.Limiter
+	log     *slog.Logger
 
 	// baseURL is overridden by tests; production code always uses
 	// apiBase.
@@ -68,6 +77,7 @@ func New(tokens TokenSource, log *slog.Logger) *Plugin {
 	return &Plugin{
 		tokens:  tokens,
 		client:  &http.Client{Timeout: requestTimeout},
+		limiter: rate.NewLimiter(rate.Limit(requestsPerSecond), rateLimiterBurst),
 		log:     log,
 		baseURL: apiBase,
 	}
