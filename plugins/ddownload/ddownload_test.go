@@ -1,6 +1,7 @@
 package ddownload
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -129,7 +130,7 @@ func TestResolve_Success(t *testing.T) {
 		{"status": 200, "filecode": "a1b2c3d4e5f6", "name": "movie.rar", "download": "5", "size": "123456789", "uploaded": "2026-01-01 00:00:00"},
 	}), &fakeTokens{token: "test-key"})
 
-	info, err := p.Resolve("https://ddownload.com/a1b2c3d4e5f6/movie.rar", nil)
+	info, err := p.Resolve(context.Background(), "https://ddownload.com/a1b2c3d4e5f6/movie.rar", nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestResolve_NotFound(t *testing.T) {
 		{"status": 404, "filecode": "gone"},
 	}), &fakeTokens{token: "test-key"})
 
-	_, err := p.Resolve("https://ddownload.com/gone/x", nil)
+	_, err := p.Resolve(context.Background(), "https://ddownload.com/gone/x", nil)
 	if !errors.Is(err, plugins.ErrNotFound) {
 		t.Errorf("err = %v, want plugins.ErrNotFound", err)
 	}
@@ -154,7 +155,7 @@ func TestResolve_Unavailable(t *testing.T) {
 		{"status": 451, "filecode": "blocked"},
 	}), &fakeTokens{token: "test-key"})
 
-	_, err := p.Resolve("https://ddownload.com/blocked/x", nil)
+	_, err := p.Resolve(context.Background(), "https://ddownload.com/blocked/x", nil)
 	if !errors.Is(err, plugins.ErrUnavailable) {
 		t.Errorf("err = %v, want plugins.ErrUnavailable", err)
 	}
@@ -163,7 +164,7 @@ func TestResolve_Unavailable(t *testing.T) {
 func TestResolve_InvalidKey(t *testing.T) {
 	p := newTestPlugin(t, fileInfoHandler(t, 400, "Invalid key", nil), &fakeTokens{token: "test-key"})
 
-	_, err := p.Resolve("https://ddownload.com/x/y", nil)
+	_, err := p.Resolve(context.Background(), "https://ddownload.com/x/y", nil)
 	if !errors.Is(err, plugins.ErrAccountRequired) {
 		t.Errorf("err = %v, want plugins.ErrAccountRequired", err)
 	}
@@ -171,7 +172,7 @@ func TestResolve_InvalidKey(t *testing.T) {
 
 func TestResolve_NoAccountConfigured(t *testing.T) {
 	p := New(&fakeTokens{}, nil)
-	_, err := p.Resolve("https://ddownload.com/x/y", nil)
+	_, err := p.Resolve(context.Background(), "https://ddownload.com/x/y", nil)
 	if !errors.Is(err, plugins.ErrAccountRequired) {
 		t.Errorf("err = %v, want plugins.ErrAccountRequired", err)
 	}
@@ -183,7 +184,7 @@ func TestResolve_NoAccountConfigured(t *testing.T) {
 // the live investigation behind this).
 func TestFetchDownloadURL_NoWorkingMechanism(t *testing.T) {
 	p := New(&fakeTokens{token: "test-key"}, nil)
-	_, err := p.FetchDownloadURL("https://ddownload.com/a1b2c3d4e5f6/movie.rar", nil)
+	_, err := p.FetchDownloadURL(context.Background(), "https://ddownload.com/a1b2c3d4e5f6/movie.rar", nil)
 	if err == nil {
 		t.Fatal("expected an error — FetchDownloadURL has no working implementation")
 	}
@@ -199,7 +200,7 @@ func TestFetchDownloadURL_NoWorkingMechanism(t *testing.T) {
 
 func TestFetchDownloadURL_NoAccountConfigured(t *testing.T) {
 	p := New(&fakeTokens{}, nil)
-	_, err := p.FetchDownloadURL("https://ddownload.com/x/y", nil)
+	_, err := p.FetchDownloadURL(context.Background(), "https://ddownload.com/x/y", nil)
 	if !errors.Is(err, plugins.ErrAccountRequired) {
 		t.Errorf("err = %v, want plugins.ErrAccountRequired", err)
 	}
@@ -235,7 +236,7 @@ func TestValidateAccount_Success(t *testing.T) {
 		"storage_used":         "0",
 	}), &fakeTokens{token: "test-key"})
 
-	info, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"api_key": "test-key"}})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"api_key": "test-key"}})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}
@@ -258,7 +259,7 @@ func TestValidateAccount_TrafficExhausted(t *testing.T) {
 		"premium_traffic_left": 0,
 	}), &fakeTokens{token: "test-key"})
 
-	info, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"api_key": "test-key"}})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"api_key": "test-key"}})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}
@@ -273,7 +274,7 @@ func TestValidateAccount_TrafficExhausted(t *testing.T) {
 func TestValidateAccount_InvalidKey(t *testing.T) {
 	p := newTestPlugin(t, accountInfoHandler(t, "test-key", 400, "Invalid key", nil), &fakeTokens{token: "test-key"})
 
-	info, err := p.ValidateAccount(&plugins.Account{Extra: map[string]string{"api_key": "test-key"}})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Extra: map[string]string{"api_key": "test-key"}})
 	if err != nil {
 		t.Fatalf("ValidateAccount returned an error, want a (Valid: false) result: %v", err)
 	}
@@ -284,7 +285,7 @@ func TestValidateAccount_InvalidKey(t *testing.T) {
 
 func TestValidateAccount_NoKeyConfigured(t *testing.T) {
 	p := New(&fakeTokens{}, nil)
-	_, err := p.ValidateAccount(nil)
+	_, err := p.ValidateAccount(context.Background(), nil)
 	if !errors.Is(err, plugins.ErrAccountRequired) {
 		t.Errorf("err = %v, want plugins.ErrAccountRequired", err)
 	}
@@ -293,7 +294,7 @@ func TestValidateAccount_NoKeyConfigured(t *testing.T) {
 func TestValidateAccount_FallsBackToPassword(t *testing.T) {
 	p := newTestPlugin(t, accountInfoHandler(t, "webui-key", 200, "OK", map[string]any{}), &fakeTokens{password: "webui-key"})
 
-	info, err := p.ValidateAccount(&plugins.Account{Password: "webui-key"})
+	info, err := p.ValidateAccount(context.Background(), &plugins.Account{Password: "webui-key"})
 	if err != nil {
 		t.Fatalf("ValidateAccount: %v", err)
 	}

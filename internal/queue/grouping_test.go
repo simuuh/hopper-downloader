@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"errors"
 	"sort"
 	"testing"
@@ -146,13 +147,15 @@ func (f *fakeExpander) Domains() []string { return []string{"container.example"}
 func (f *fakeExpander) Match(u string) bool {
 	return len(u) > 26 && u[:26] == "https://container.example/"
 }
-func (f *fakeExpander) Resolve(string, *plugins.Account) (*plugins.FileInfo, error) {
+func (f *fakeExpander) Resolve(context.Context, string, *plugins.Account) (*plugins.FileInfo, error) {
 	return nil, errors.New("unused")
 }
-func (f *fakeExpander) FetchDownloadURL(string, *plugins.Account) (string, error) {
+func (f *fakeExpander) FetchDownloadURL(context.Context, string, *plugins.Account) (string, error) {
 	return "", errors.New("unused")
 }
-func (f *fakeExpander) Expand(string) ([]plugins.ExpandedLink, error) { return f.links, nil }
+func (f *fakeExpander) Expand(context.Context, string) ([]plugins.ExpandedLink, error) {
+	return f.links, nil
+}
 
 func TestAddLinks_ContainerPartsMergeWithDirectParts(t *testing.T) {
 	exp := &fakeExpander{links: []plugins.ExpandedLink{

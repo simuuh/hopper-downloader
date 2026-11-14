@@ -348,13 +348,13 @@ func mapFileError(err error) error {
 // FetchDownloadURL pair already do for their own, unrelated endpoints) —
 // a real, confirmed consequence of katfile's documented API shape, not a
 // workaround chosen for convenience.
-func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (p *Plugin) Resolve(ctx context.Context, rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	shortURL, err := shortURLFromURL(rawURL)
 	if err != nil {
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	var dl fileDownloadResult
@@ -399,13 +399,13 @@ func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo
 // FetchDownloadURL implements plugins.Hoster via POST /file/download,
 // confirmed live and documented — unlike plugins/ddownload, katfile's API
 // does have a real, working download-URL endpoint.
-func (p *Plugin) FetchDownloadURL(rawURL string, acc *plugins.Account) (string, error) {
+func (p *Plugin) FetchDownloadURL(ctx context.Context, rawURL string, acc *plugins.Account) (string, error) {
 	shortURL, err := shortURLFromURL(rawURL)
 	if err != nil {
 		return "", err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	var dl fileDownloadResult
@@ -443,13 +443,13 @@ type accountPackageResult struct {
 // (confirming the keys work at all), /account/package (for label/
 // level_type), and /account/info (for paidExpiryDate) — three real,
 // documented API calls, not one.
-func (p *Plugin) ValidateAccount(acc *plugins.Account) (*plugins.AccountInfo, error) {
+func (p *Plugin) ValidateAccount(ctx context.Context, acc *plugins.Account) (*plugins.AccountInfo, error) {
 	key1, key2, ok := p.credentialsFrom(acc)
 	if !ok {
 		return nil, plugins.ErrAccountRequired
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	token, id, err := p.authorize(ctx, key1, key2)

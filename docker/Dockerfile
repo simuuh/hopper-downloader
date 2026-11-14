@@ -67,6 +67,11 @@ COPY --from=go-builder /out/hopperctl /usr/local/bin/hopperctl
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 ENV HOPPER_CONFIG_FILE=/config/hopper.yaml
+# A UTF-8 locale for unrar: under the image's default POSIX locale it
+# can't match an archive password with non-ASCII characters (e.g.
+# umlauts), however the password is passed. C.UTF-8 ships with glibc,
+# no locales package needed.
+ENV LANG=C.UTF-8
 
 VOLUME ["/config", "/downloads"]
 # 9667: REST API + Web UI. 9666: Click'n'Load (optional; disable via

@@ -194,13 +194,13 @@ func hostSupported(hosts map[string]hostStatus, host string) bool {
 }
 
 // Resolve implements plugins.Hoster via POST /unrestrict/check.
-func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (p *Plugin) Resolve(ctx context.Context, rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return nil, plugins.ErrAccountRequired
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	resp, err := p.do(ctx, http.MethodPost, "/unrestrict/check", token, url.Values{"link": {rawURL}})
@@ -230,13 +230,13 @@ func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo
 }
 
 // FetchDownloadURL implements plugins.Hoster via POST /unrestrict/link.
-func (p *Plugin) FetchDownloadURL(rawURL string, acc *plugins.Account) (string, error) {
+func (p *Plugin) FetchDownloadURL(ctx context.Context, rawURL string, acc *plugins.Account) (string, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return "", plugins.ErrAccountRequired
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	resp, err := p.do(ctx, http.MethodPost, "/unrestrict/link", token, url.Values{"link": {rawURL}})
@@ -351,13 +351,13 @@ func (p *Plugin) FetchFreeDownloadURL(ctx context.Context, rawURL string, acc *p
 // unaffected plugins.ErrAccountRequired) hand a queued item to a
 // different plugin immediately instead of retrying this one for up to an
 // hour.
-func (p *Plugin) ValidateAccount(acc *plugins.Account) (*plugins.AccountInfo, error) {
+func (p *Plugin) ValidateAccount(ctx context.Context, acc *plugins.Account) (*plugins.AccountInfo, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return nil, plugins.ErrAccountRequired
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	resp, err := p.do(ctx, http.MethodGet, "/user", token, nil)

@@ -167,13 +167,13 @@ func (p *Plugin) Match(rawURL string) bool {
 }
 
 // Resolve implements plugins.Hoster via GET /file/info.
-func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (p *Plugin) Resolve(ctx context.Context, rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	fileID, err := fileIDFromURL(rawURL)
 	if err != nil {
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	var file fileObject
@@ -193,13 +193,13 @@ func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo
 }
 
 // FetchDownloadURL implements plugins.Hoster via GET /file/download.
-func (p *Plugin) FetchDownloadURL(rawURL string, acc *plugins.Account) (string, error) {
+func (p *Plugin) FetchDownloadURL(ctx context.Context, rawURL string, acc *plugins.Account) (string, error) {
 	fileID, err := fileIDFromURL(rawURL)
 	if err != nil {
 		return "", err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	var downloadURL string
@@ -290,8 +290,8 @@ func (p *Plugin) FetchFreeDownloadURL(ctx context.Context, rawURL string, acc *p
 
 // ValidateAccount implements plugins.AccountValidator via GET
 // /user/info.
-func (p *Plugin) ValidateAccount(acc *plugins.Account) (*plugins.AccountInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+func (p *Plugin) ValidateAccount(ctx context.Context, acc *plugins.Account) (*plugins.AccountInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
 	var user userObject

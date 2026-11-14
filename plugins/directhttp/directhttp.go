@@ -20,6 +20,7 @@
 package directhttp
 
 import (
+	"context"
 	"fmt"
 	"mime"
 	"net/http"
@@ -75,8 +76,8 @@ func (p *Plugin) Match(rawURL string) bool {
 // Resolve implements plugins.Hoster using a HEAD request to read Content-
 // Length and Content-Disposition without transferring the file body. acc
 // is ignored: direct HTTP has no account concept.
-func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
-	req, err := http.NewRequest(http.MethodHead, rawURL, nil)
+func (p *Plugin) Resolve(ctx context.Context, rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%s: build request: %w", pluginName, err)
 	}
@@ -104,7 +105,7 @@ func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo
 
 // FetchDownloadURL implements plugins.Hoster. Direct HTTP links need no
 // token exchange, so the input URL is returned unchanged.
-func (p *Plugin) FetchDownloadURL(rawURL string, acc *plugins.Account) (string, error) {
+func (p *Plugin) FetchDownloadURL(ctx context.Context, rawURL string, acc *plugins.Account) (string, error) {
 	return rawURL, nil
 }
 

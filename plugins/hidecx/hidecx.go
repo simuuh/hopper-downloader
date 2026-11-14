@@ -30,6 +30,7 @@ package hidecx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -193,23 +194,44 @@ type linkResolveResponse struct {
 // underneath. acc is ignored — hide.cx needs no account of its own, and
 // the account that matters is resolved (for the *delegate* plugin) via
 // Resolver, not this parameter.
-func (p *Plugin) Resolve(rawURL string, _ *plugins.Account) (*plugins.FileInfo, error) {
-	finalURL, hoster, acc, err := p.resolveTarget(rawURL)
+func (p *Plugin) Resolve(ctx context.Context, rawURL string, _ *plugins.Account) (*plugins.FileInfo, error) {
+	finalURL, hoster, acc, err := p.resolveTarget(ctx, rawURL)
 	if err != nil {
 		return nil, err
 	}
-	return hoster.Resolve(finalURL, acc)
+	info, err := hoster.Resolve(ctx, finalURL, acc)
+	return info, delegateErr(hoster, err)
 }
 
 // FetchDownloadURL implements plugins.Hoster: resolve the container as
 // Resolve does, then let the matched hoster plugin (Real-Debrid or a
 // native hoster plugin) exchange the real URL for a direct one.
-func (p *Plugin) FetchDownloadURL(rawURL string, _ *plugins.Account) (string, error) {
-	finalURL, hoster, acc, err := p.resolveTarget(rawURL)
+func (p *Plugin) FetchDownloadURL(ctx context.Context, rawURL string, _ *plugins.Account) (string, error) {
+	finalURL, hoster, acc, err := p.resolveTarget(ctx, rawURL)
 	if err != nil {
 		return "", err
 	}
-	return hoster.FetchDownloadURL(finalURL, acc)
+	u, err := hoster.FetchDownloadURL(ctx, finalURL, acc)
+	return u, delegateErr(hoster, err)
+}
+
+// delegateErr attributes an error of the delegate plugin to it. The
+// queue reads ErrAccountRequired and ErrUnsupportedHost as "this plugin
+// can't serve the URL" and moves on to the next plugin for the hide.cx
+// URL — which is the directhttp catch-all, downloading hide.cx's HTML
+// page. The delegate's account or host status says nothing about
+// hide.cx, so those two become a transient ErrUnavailable: the item is
+// retried later, when the resolver may pick another delegate or
+// account. Every other error keeps its identity (ErrNotFound still
+// fails the item for good).
+func delegateErr(delegate plugins.Hoster, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, plugins.ErrAccountRequired) || errors.Is(err, plugins.ErrUnsupportedHost) {
+		return fmt.Errorf("%s: via %s: %v: %w", pluginName, delegate.Name(), err, plugins.ErrUnavailable)
+	}
+	return fmt.Errorf("%s: via %s: %w", pluginName, delegate.Name(), err)
 }
 
 // Expand implements plugins.Expander: unlike Resolve/FetchDownloadURL,
@@ -225,13 +247,13 @@ func (p *Plugin) FetchDownloadURL(rawURL string, _ *plugins.Account) (string, er
 // add request) waits for all of it: at most maxContainerLinks online
 // links, and expandTimeout in total. A link that resolves to hide.cx
 // again is skipped instead of followed.
-func (p *Plugin) Expand(rawURL string) ([]plugins.ExpandedLink, error) {
+func (p *Plugin) Expand(ctx context.Context, rawURL string) ([]plugins.ExpandedLink, error) {
 	uuid, err := containerUUID(rawURL)
 	if err != nil {
 		return nil, err
 	}
 
-	container, err := p.fetchContainer(uuid)
+	container, err := p.fetchContainer(ctx, uuid)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +282,7 @@ func (p *Plugin) Expand(rawURL string) ([]plugins.ExpandedLink, error) {
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("%s: %w: resolving the container's links took longer than %s", pluginName, plugins.ErrUnavailable, expandTimeout)
 		}
-		hosterURL, err := p.resolveLinkURL(uuid, l)
+		hosterURL, err := p.resolveLinkURL(ctx, uuid, l)
 		if err != nil {
 			return nil, fmt.Errorf("%s: resolve link %s: %w", pluginName, l.ID, err)
 		}
@@ -345,13 +367,13 @@ func partNumber(name string) (int, bool) {
 // link's real hoster URL, and re-runs plugin matching on it. Resolve and
 // FetchDownloadURL share this so "what does this hide.cx link actually
 // point to" has exactly one implementation.
-func (p *Plugin) resolveTarget(rawURL string) (finalURL string, hoster plugins.Hoster, acc *plugins.Account, err error) {
+func (p *Plugin) resolveTarget(ctx context.Context, rawURL string) (finalURL string, hoster plugins.Hoster, acc *plugins.Account, err error) {
 	uuid, err := containerUUID(rawURL)
 	if err != nil {
 		return "", nil, nil, err
 	}
 
-	container, err := p.fetchContainer(uuid)
+	container, err := p.fetchContainer(ctx, uuid)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -361,7 +383,7 @@ func (p *Plugin) resolveTarget(rawURL string) (finalURL string, hoster plugins.H
 		return "", nil, nil, err
 	}
 
-	finalURL, err = p.resolveLinkURL(uuid, link)
+	finalURL, err = p.resolveLinkURL(ctx, uuid, link)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -402,9 +424,9 @@ func (p *Plugin) delegateFor(finalURL string) (plugins.Hoster, *plugins.Account,
 // is usable: access_status must be "online" (the only value observed so
 // far; anything else is treated as temporarily unavailable rather than
 // guessed at), and it must have at least one link.
-func (p *Plugin) fetchContainer(uuid string) (*containerResponse, error) {
+func (p *Plugin) fetchContainer(ctx context.Context, uuid string) (*containerResponse, error) {
 	var c containerResponse
-	if err := p.getJSON("/containers/"+uuid, &c); err != nil {
+	if err := p.getJSON(ctx, "/containers/"+uuid, &c); err != nil {
 		return nil, err
 	}
 	if c.AccessStatus != "online" {
@@ -445,7 +467,7 @@ func pickLink(c *containerResponse) (containerLink, error) {
 // this normally makes a second call, GET
 // /containers/<uuid>/links/<link.ID>, which returns {"url": "..."}; the
 // direct field is still checked first in case that's not universal.
-func (p *Plugin) resolveLinkURL(uuid string, link containerLink) (string, error) {
+func (p *Plugin) resolveLinkURL(ctx context.Context, uuid string, link containerLink) (string, error) {
 	if link.HosterURL != nil && *link.HosterURL != "" {
 		return *link.HosterURL, nil
 	}
@@ -453,7 +475,7 @@ func (p *Plugin) resolveLinkURL(uuid string, link containerLink) (string, error)
 	var res linkResolveResponse
 	// link.ID comes from the container's API response: escaped, an ID
 	// like "../../x?y=" can't rewrite the path or add a query.
-	if err := p.getJSON(fmt.Sprintf("/containers/%s/links/%s", uuid, url.PathEscape(link.ID)), &res); err != nil {
+	if err := p.getJSON(ctx, fmt.Sprintf("/containers/%s/links/%s", uuid, url.PathEscape(link.ID)), &res); err != nil {
 		return "", err
 	}
 	if res.URL == "" {
@@ -468,17 +490,10 @@ func (p *Plugin) resolveLinkURL(uuid string, link containerLink) (string, error)
 // where one applies; the response body is size-capped defensively even
 // though real responses are a couple KB at most.
 //
-// Bounded by its own httpTimeout-scoped context, the same
-// context.WithTimeout(context.Background(), ...) pattern every other
-// Hoster plugin's own request helper already uses (rapidgator, realdebrid,
-// onefichier) — plugins.Hoster itself takes no context parameter for a
-// caller (queue.Manager.run) to thread through, so this is a self-scoped
-// bound, not end-to-end cancellation from the download's own context.
-// Previously used the contextless http.NewRequest, which relied solely on
-// p.client.Timeout with no way to make that bound explicit at the request
-// level or to shorten it via a passed-in context.
-func (p *Plugin) getJSON(path string, out any) error {
-	ctx, cancel := context.WithTimeout(context.Background(), httpTimeout)
+// Bounded by httpTimeout and by ctx, the caller's context: cancelling
+// the download (or the add request, for Expand) aborts the request.
+func (p *Plugin) getJSON(ctx context.Context, path string, out any) error {
+	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.apiBase+path, nil)

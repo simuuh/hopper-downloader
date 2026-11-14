@@ -152,8 +152,8 @@ func (p *Plugin) fetchHosts(token string) (multihost.Hosts, error) {
 // Resolve implements plugins.Hoster. Premiumize has no separate check for
 // hoster links, so this already calls /transfer/directdl and keeps the
 // result for FetchDownloadURL.
-func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
-	f, err := p.directDL(rawURL, acc)
+func (p *Plugin) Resolve(ctx context.Context, rawURL string, acc *plugins.Account) (*plugins.FileInfo, error) {
+	f, err := p.directDL(ctx, rawURL, acc)
 	if err != nil {
 		return nil, err
 	}
@@ -162,15 +162,15 @@ func (p *Plugin) Resolve(rawURL string, acc *plugins.Account) (*plugins.FileInfo
 
 // FetchDownloadURL implements plugins.Hoster via POST /transfer/directdl
 // (or the result Resolve just fetched).
-func (p *Plugin) FetchDownloadURL(rawURL string, acc *plugins.Account) (string, error) {
-	f, err := p.directDL(rawURL, acc)
+func (p *Plugin) FetchDownloadURL(ctx context.Context, rawURL string, acc *plugins.Account) (string, error) {
+	f, err := p.directDL(ctx, rawURL, acc)
 	if err != nil {
 		return "", err
 	}
 	return f.Link, nil
 }
 
-func (p *Plugin) directDL(rawURL string, acc *plugins.Account) (file, error) {
+func (p *Plugin) directDL(ctx context.Context, rawURL string, acc *plugins.Account) (file, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return file{}, plugins.ErrAccountRequired
@@ -178,7 +178,7 @@ func (p *Plugin) directDL(rawURL string, acc *plugins.Account) (file, error) {
 	if f, ok := p.links.Get(rawURL); ok {
 		return f, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	var resp struct {
 		Content []file `json:"content"`
@@ -201,12 +201,12 @@ func (p *Plugin) directDL(rawURL string, acc *plugins.Account) (file, error) {
 // ValidateAccount implements plugins.AccountValidator via GET
 // /account/info. A used-up fair-use allowance is reported as no traffic
 // left, so the account rotation skips it.
-func (p *Plugin) ValidateAccount(acc *plugins.Account) (*plugins.AccountInfo, error) {
+func (p *Plugin) ValidateAccount(ctx context.Context, acc *plugins.Account) (*plugins.AccountInfo, error) {
 	token := p.tokenFrom(acc)
 	if token == "" {
 		return nil, plugins.ErrAccountRequired
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	var ai struct {
 		PremiumUntil *int64  `json:"premium_until"`

@@ -315,7 +315,7 @@ type countingValidator struct {
 }
 
 func (c *countingValidator) Name() string { return "realdebrid" }
-func (c *countingValidator) ValidateAccount(*plugins.Account) (*plugins.AccountInfo, error) {
+func (c *countingValidator) ValidateAccount(context.Context, *plugins.Account) (*plugins.AccountInfo, error) {
 	c.calls++
 	return &plugins.AccountInfo{Valid: true, Label: "Premium"}, nil
 }

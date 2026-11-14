@@ -9,9 +9,13 @@ import (
 )
 
 // do issues one 1fichier API request: POST, JSON body, bearer auth — the
-// convention every endpoint in this package uses. The caller is
+// convention every endpoint in this package uses — paced by p.limiter. The caller is
 // responsible for closing the returned response body.
 func (p *Plugin) do(ctx context.Context, path, token string, body any) (*http.Response, error) {
+	if err := p.limiter.Wait(ctx); err != nil {
+		return nil, fmt.Errorf("%s: rate limiter: %w", pluginName, err)
+	}
+
 	base := p.baseURL
 	if base == "" {
 		base = apiBase

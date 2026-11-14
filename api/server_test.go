@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,10 +39,10 @@ type fakeCredentialedHoster struct{ name string }
 func (f *fakeCredentialedHoster) Name() string      { return f.name }
 func (f *fakeCredentialedHoster) Domains() []string { return []string{f.name + ".example.com"} }
 func (f *fakeCredentialedHoster) Match(string) bool { return false }
-func (f *fakeCredentialedHoster) Resolve(url string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (f *fakeCredentialedHoster) Resolve(_ context.Context, url string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	return nil, nil
 }
-func (f *fakeCredentialedHoster) FetchDownloadURL(url string, acc *plugins.Account) (string, error) {
+func (f *fakeCredentialedHoster) FetchDownloadURL(_ context.Context, url string, acc *plugins.Account) (string, error) {
 	return "", nil
 }
 func (f *fakeCredentialedHoster) Credentialed() bool { return true }
@@ -54,10 +55,10 @@ type fakeUncredentialedHoster struct{ name string }
 func (f *fakeUncredentialedHoster) Name() string      { return f.name }
 func (f *fakeUncredentialedHoster) Domains() []string { return nil }
 func (f *fakeUncredentialedHoster) Match(string) bool { return true }
-func (f *fakeUncredentialedHoster) Resolve(url string, acc *plugins.Account) (*plugins.FileInfo, error) {
+func (f *fakeUncredentialedHoster) Resolve(_ context.Context, url string, acc *plugins.Account) (*plugins.FileInfo, error) {
 	return nil, nil
 }
-func (f *fakeUncredentialedHoster) FetchDownloadURL(url string, acc *plugins.Account) (string, error) {
+func (f *fakeUncredentialedHoster) FetchDownloadURL(_ context.Context, url string, acc *plugins.Account) (string, error) {
 	return "", nil
 }
 
@@ -71,7 +72,7 @@ type fakeValidatingHoster struct {
 	validateFn func(acc *plugins.Account) (*plugins.AccountInfo, error)
 }
 
-func (f *fakeValidatingHoster) ValidateAccount(acc *plugins.Account) (*plugins.AccountInfo, error) {
+func (f *fakeValidatingHoster) ValidateAccount(_ context.Context, acc *plugins.Account) (*plugins.AccountInfo, error) {
 	if f.validateFn != nil {
 		return f.validateFn(acc)
 	}
