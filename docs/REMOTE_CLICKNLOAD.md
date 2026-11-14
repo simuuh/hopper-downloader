@@ -93,8 +93,12 @@ its path and expiry.
 ### Windows
 
 `service install` registers a real Windows Service ("HopperCtl" in
-`services.msc`) that starts at boot without a console window. It runs as
-LocalSystem, so it reads `%ProgramData%\hopper\hopperctl.yaml`;
+`services.msc`) that starts at boot without a console window. Run it from
+an administrator terminal. It copies `hopperctl.exe` to
+`%ProgramFiles%\Hopper\` and the service runs that copy, so you can delete
+the downloaded file afterwards; to update, run `service uninstall` and
+`service install` again with the new binary. It runs as LocalSystem, so it
+reads `%ProgramData%\hopper\hopperctl.yaml`;
 `service install` writes that and your own
 `%APPDATA%\hopper\hopperctl.yaml` (used when you run hopperctl by hand).
 They are not kept in sync after install. Logs go to
@@ -103,7 +107,7 @@ certificate, so the browser step above applies to it separately.
 
 ```sh
 sc query HopperCtl
-hopperctl service uninstall   # removes the service and the ProgramData config
+hopperctl service uninstall   # removes the service, the installed binary and the ProgramData config
 ```
 
 ## Limitations
