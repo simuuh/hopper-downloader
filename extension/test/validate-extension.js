@@ -125,6 +125,34 @@ function buildSandbox() {
     return Promise.resolve(new Response('real-network-response', { status: 200 }));
   }
 
+  // StubForm stands in for an HTMLFormElement: attributes plus a list of
+  // [name, value] fields that StubFormData reads. submit() here is the
+  // "real navigation" — realSubmitCalls only increments when inject.js's
+  // override passed the call through.
+  let realSubmitCalls = 0;
+  class StubForm {
+    constructor(attrs, fields) {
+      this.tagName = 'FORM';
+      this._attrs = attrs || {};
+      this._fields = fields || [];
+    }
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this._attrs, name) ? this._attrs[name] : null;
+    }
+    submit() {
+      realSubmitCalls++;
+    }
+  }
+  class StubFormData {
+    constructor(form) {
+      this._fields = form ? form._fields.slice() : [];
+    }
+    [Symbol.iterator]() {
+      return this._fields[Symbol.iterator]();
+    }
+  }
+  const windowListeners = {};
+
   const sandbox = {
     console,
     setTimeout,
@@ -134,6 +162,9 @@ function buildSandbox() {
     Event,
     CustomEvent,
     Promise,
+    URLSearchParams,
+    FormData: StubFormData,
+    HTMLFormElement: StubForm,
     Node: { ELEMENT_NODE: 1 },
     MutationObserver: StubMutationObserver,
     location: { href: 'https://example.com/some-cnl-button-page' },
@@ -146,13 +177,34 @@ function buildSandbox() {
     relayedEvents.push(event);
     return true;
   };
+  sandbox.window.addEventListener = (type, listener) => {
+    (windowListeners[type] = windowListeners[type] || []).push(listener);
+  };
+
+  // fireSubmit runs the registered submit listeners the way a browser
+  // dispatches a user/requestSubmit() submission and reports whether
+  // the default action (the real navigation) was prevented.
+  function fireSubmit(form, submitter) {
+    const event = {
+      type: 'submit',
+      target: form,
+      submitter: submitter || null,
+      defaultPrevented: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+    };
+    (windowListeners.submit || []).forEach((l) => l(event));
+    return event.defaultPrevented;
+  }
 
   return {
     context: vm.createContext(sandbox),
     sandbox,
     relayedEvents,
     observerInstances,
-    counts: () => ({ realFetchCalls, realSendCalls }),
+    fireSubmit,
+    counts: () => ({ realFetchCalls, realSendCalls, realSubmitCalls }),
   };
 }
 
@@ -249,6 +301,66 @@ async function main() {
     assert.strictEqual(env.counts().realFetchCalls, 1);
     const text = await resp.text();
     assert.strictEqual(text, 'real-network-response');
+  });
+
+  // ---- form submissions to 127.0.0.1:9666 (link-protector helper popups) ----
+  const helperFields = [
+    ['passwords', 'site.example'],
+    ['source', 'site.example'],
+    ['package', 'Example Package'],
+    ['jk', "function f(){ return '31323334353637383930313233343536';}"],
+    ['crypted', 'Q1JZUFRFRA=='],
+  ];
+
+  await check('form.submit() to 127.0.0.1:9666/flash/addcrypted2 is relayed, not navigated', async () => {
+    const env = loadInjectJS();
+    const form = new env.sandbox.HTMLFormElement(
+      { action: 'http://127.0.0.1:9666/flash/addcrypted2', method: 'POST', target: 'hidden' },
+      helperFields
+    );
+    form.submit();
+    assert.strictEqual(env.counts().realSubmitCalls, 0, 'the real form navigation must not start');
+    assert.strictEqual(env.relayedEvents.length, 1);
+    const relayed = JSON.parse(env.relayedEvents[0].detail);
+    assert.strictEqual(relayed.path, '/flash/addcrypted2');
+    assert.strictEqual(relayed.contentType, 'application/x-www-form-urlencoded');
+    const params = new URLSearchParams(relayed.body);
+    assert.strictEqual(params.get('crypted'), 'Q1JZUFRFRA==');
+    assert.strictEqual(params.get('jk'), "function f(){ return '31323334353637383930313233343536';}");
+    assert.strictEqual(params.get('package'), 'Example Package');
+  });
+
+  await check('form.submit() to an unrelated action is NOT intercepted', async () => {
+    const env = loadInjectJS();
+    const form = new env.sandbox.HTMLFormElement({ action: 'https://example.com/search', method: 'POST' }, [['q', 'x']]);
+    form.submit();
+    assert.strictEqual(env.counts().realSubmitCalls, 1);
+    assert.strictEqual(env.relayedEvents.length, 0);
+  });
+
+  await check('submit event for a 127.0.0.1:9666 form is relayed and its navigation prevented', async () => {
+    const env = loadInjectJS();
+    const form = new env.sandbox.HTMLFormElement({ action: 'http://127.0.0.1:9666/flash/add', method: 'POST' }, [
+      ['urls', 'https://example.com/file'],
+    ]);
+    assert.strictEqual(env.fireSubmit(form), true, 'the default navigation must be prevented');
+    assert.strictEqual(env.relayedEvents.length, 1);
+    assert.strictEqual(JSON.parse(env.relayedEvents[0].detail).path, '/flash/add');
+  });
+
+  await check('submit event honours the submitter formaction over the form action', async () => {
+    const env = loadInjectJS();
+    const form = new env.sandbox.HTMLFormElement({ action: 'https://example.com/elsewhere' }, [['urls', 'x']]);
+    const submitter = { getAttribute: (n) => (n === 'formaction' ? 'http://127.0.0.1:9666/flash/add' : null) };
+    assert.strictEqual(env.fireSubmit(form, submitter), true);
+    assert.strictEqual(env.relayedEvents.length, 1);
+  });
+
+  await check('submit event for an unrelated form is left alone', async () => {
+    const env = loadInjectJS();
+    const form = new env.sandbox.HTMLFormElement({ action: 'https://example.com/login' }, [['user', 'x']]);
+    assert.strictEqual(env.fireSubmit(form), false);
+    assert.strictEqual(env.relayedEvents.length, 0);
   });
 
   // ---- MutationObserver: watches the right target with the right options ----

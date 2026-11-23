@@ -493,7 +493,12 @@ A valid re-check, a credential update or re-enabling ends the cooldown.
 MV3, Chrome/Edge and Firefox 128+ (`background` declares both
 `service_worker` and `scripts`). A MAIN-world content script overrides
 `fetch`/`XMLHttpRequest` for `127.0.0.1:9666` and answers the probes
-itself, so no request reaches the network (works in Brave too);
+itself, so no request reaches the network (works in Brave too). Form
+submissions to `127.0.0.1:9666` (`form.submit()` and `submit` events)
+are relayed the same way — filecrypt.cc's helper popup
+(`/helper.html`, receives jk/crypted via `postMessage`) sends its
+`/flash/addcrypted2` request as a hidden form POST, not via XHR
+(verified against the live helper page, 2026-11);
 `declarativeNetRequest` redirects are the fallback. The target URL's
 host is used with port 9666 for CnL and 9667 for imports; the API token
 is stored in `chrome.storage.local`, never synced. Firefox requires an
