@@ -32,7 +32,7 @@ falls through to `directhttp`.
 
 | Service | How links arrive | Notes |
 | --- | --- | --- |
-| filecrypt.cc | Click'n'Load 2 (`/flash/addcrypted2`, AES) or a `.dlc` downloaded in the browser | Container pages require a captcha solved in a real browser. Hopper never fetches them itself — the browser's Click'n'Load button (or the `.dlc` you download) hands the links over. `/DLC/<id>.dlc` returns an empty body without a captcha-solved session. |
+| filecrypt.cc | Click'n'Load 2 (`/flash/addcrypted2`, AES) or a `.dlc` downloaded in the browser | Container pages require a captcha solved in a real browser. Hopper never fetches them itself — the browser's Click'n'Load button (or the `.dlc` you download) hands the links over. The button may first show a "use Duckier instead" interstitial; "continue with JDownloader" proceeds normally. The links are then sent from a `filecrypt.cc/helper.html` popup as a form POST, so popups must be allowed for filecrypt.cc. `/DLC/<id>.dlc` returns an empty body without a captcha-solved session. |
 | hide.cx | Click'n'Load (`/flash/add`) or pasted container URL | Not a hoster: a container (`hide.cx/container/<uuid>`) wraps one or more real hoster links behind a JSON API. The `hidecx` plugin expands it into one queue item per part, each matched against all other plugins. |
 | Other CnL-capable sites | Click'n'Load 1/2 | Any page with a JDownloader-compatible Click'n'Load button works the same way. |
 

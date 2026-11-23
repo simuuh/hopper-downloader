@@ -167,6 +167,63 @@
     }, 0);
   };
 
+  // ---- <form action="http://127.0.0.1:9666/flash/..."> interception ----
+  // filecrypt.cc's Click'n'Load button does not call fetch/XHR itself: it
+  // opens a helper popup (filecrypt.cc/helper.html), hands it jk/crypted
+  // via postMessage, and the popup submits a plain hidden
+  // <form method="POST" action="http://127.0.0.1:9666/flash/addcrypted2"
+  // target="hidden"> with form.submit(). A form navigation is invisible to
+  // the overrides above and, outside hopperctl proxy, reaches nothing on
+  // 127.0.0.1:9666 — so the links never arrive. Both ways a form can go
+  // out are covered: form.submit() (fires no submit event, hence the
+  // prototype patch) and a user/requestSubmit() submission (the capture-
+  // phase submit listener). The fields are relayed exactly like an
+  // intercepted fetch body; the real navigation is never started.
+  function formActionUrl(form, submitter) {
+    // getAttribute, not form.action/.method: a field named "action" or
+    // "method" shadows those properties on the form element.
+    const raw =
+      (submitter && submitter.getAttribute && submitter.getAttribute('formaction')) ||
+      form.getAttribute('action') ||
+      '';
+    return raw ? raw : location.href;
+  }
+
+  function relayForm(form, submitter) {
+    const action = formActionUrl(form, submitter);
+    if (!isHopperCnlUrl(action)) return false;
+    const u = new URL(action, location.href);
+    let body = '';
+    try {
+      body = new URLSearchParams(new FormData(form)).toString();
+    } catch {
+      body = '';
+    }
+    relayToContentScript(u.pathname + u.search, body, 'application/x-www-form-urlencoded');
+    return true;
+  }
+
+  const formProto = window.HTMLFormElement && window.HTMLFormElement.prototype;
+  if (formProto) {
+    const originalSubmit = formProto.submit;
+    formProto.submit = function () {
+      if (relayForm(this, null)) return;
+      return originalSubmit.call(this);
+    };
+
+    window.addEventListener(
+      'submit',
+      (event) => {
+        const form = event.target;
+        if (!form || form.tagName !== 'FORM') return;
+        if (relayForm(form, event.submitter || null)) {
+          event.preventDefault();
+        }
+      },
+      true
+    );
+  }
+
   // ---- <script src="http://127.0.0.1:9666/jdcheck.js"> interception ----
   // filecrypt.cc (confirmed live — see docs/ARCHITECTURE.md's jdcheck.js 400 entry)
   // probes for a running CnL client by loading jdcheck.js as a real
