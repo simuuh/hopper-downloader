@@ -10,7 +10,7 @@
 #   docker buildx imagetools inspect golang:1.26-alpine
 
 # ---- Stage 1: build the web UI ----
-FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS web-builder
+FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS web-builder
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json* ./
 RUN npm ci
@@ -20,7 +20,7 @@ COPY web/src ./src
 RUN npm run build
 
 # ---- Stage 2: build the Go binaries ----
-FROM golang:1.26-alpine@sha256:30b1e546a9c7fa3b747c2bdba3a0c7bdf3a02ebb4c5b8405d2f948d7e8aac4ec AS go-builder
+FROM golang:1.26-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6ae85ddf92d02ab AS go-builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
